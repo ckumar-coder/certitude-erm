@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: grc_database
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: grc_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./schema_v2.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./schema_v3_additions.sql:/docker-entrypoint-initdb.d/02-schema.sql:ro
+      - ./schema_v4_additions.sql:/docker-entrypoint-initdb.d/03-schema.sql:ro
+      - ./schema_v5_additions.sql:/docker-entrypoint-initdb.d/04-schema.sql:ro
+      - ./schema_v6_additions.sql:/docker-entrypoint-initdb.d/05-schema.sql:ro
+      - ./schema_v7_additions.sql:/docker-entrypoint-initdb.d/06-schema.sql:ro
+      - ./schema_v8_additions.sql:/docker-entrypoint-initdb.d/07-schema.sql:ro
+      - ./schema_v9_additions.sql:/docker-entrypoint-initdb.d/08-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    container_name: grc_app
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/grc_db
+      - PORT=3000
+      # G8: session inactivity timeout (minutes)
+      - SESSION_TIMEOUT_MINUTES=${SESSION_TIMEOUT_MINUTES:-10}
+      # G8: account lockout duration after 5 failed attempts (minutes)
+      - LOCKOUT_MINUTES=${LOCKOUT_MINUTES:-30}
+      # G8: forced password rotation period (days)
+      - PASSWORD_MAX_AGE_DAYS=${PASSWORD_MAX_AGE_DAYS:-90}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  pgdata:

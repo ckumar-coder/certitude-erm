@@ -1,0 +1,25 @@
+{
+  "name": "grc-workstation",
+  "version": "2.41.1",
+  "description": "GRC Workstation -- v2.25.0 (Certitude Advisory Services)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "release-log": "node scripts/generate-release-log.js",
+    "migrate:v2": "node migrate-v1-to-v2.js",
+    "migrate:v10": "node migrate-v9-to-v10.js",
+    "migrate:v11": "node migrate-v10-to-v11.js",
+    "migrate:v17": "node migrate-v16-to-v17.js",
+    "build:frontend": "cd frontend && npm install && npm run build"
+  },
+  "dependencies": {
+    "@google-cloud/storage": "^7.14.0",
+    "bcryptjs": "^2.4.3",
+    "docx": "^9.5.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.22.2",
+    "nodemailer": "^6.9.0",
+    "pg": "^8.11.5",
+    "zod": "^3.23.8"
+  }
+}

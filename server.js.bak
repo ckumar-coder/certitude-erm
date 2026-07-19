@@ -1,0 +1,4122 @@
+require('dotenv').config();
+
+const express = require('express');
+const path = require('path');
+const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
+const pool = require('./db');
+const { parseCSV, toCSV } = require('./csv');
+const {
+    SESSION_IDLE_TIMEOUT_MINUTES,
+    validatePasswordPolicy,
+    isPasswordReused,
+    setPassword,
+    isPasswordExpired,
+    isLocked,
+    recordFailedLogin,
+    resetFailedLogins,
+    createSession,
+    touchSession,
+    destroySession,
+    setActiveCompany,
+    purgeExpiredSessions,
+    logAudit,
+} = require('./auth');
+
+const app = express();
+app.use(express.json({ limit: '10mb' }));
+app.use(express.static(path.join(__dirname, 'public')));
+
+const asyncHandler = (fn) => (req, res, next) => fn(req, res, next).catch(next);
+
+// Cloud Run / load-balancer health check (G3 -- Phase 8). Deliberately
+// unauthenticated and outside the /api router: verifies the process is up
+// and can reach the database, without exposing any tenant data.
+app.get('/healthz', async (req, res) => {
+    try {
+        await pool.query('SELECT 1');
+        res.status(200).json({ status: 'ok' });
+    } catch (e) {
+        res.status(503).json({ status: 'error', error: 'database unreachable' });
+    }
+});
+
+// Periodically clear expired sessions so the table doesn't grow forever.
+setInterval(() => purgeExpiredSessions().catch((e) => console.error('Session purge failed:', e)), 15 * 60 * 1000);
+
+// ============================================================
+// Helpers
+// ============================================================
+
+async function generateUniqueRiskID(client, companyId, dept, category) {
+    let deptCode = (dept || 'GEN').trim().substring(0, 3).toUpperCase();
+    if (deptCode.length < 3) deptCode = deptCode.padEnd(3, 'X');
+
+    const isStrategic = (category || '').toLowerCase().includes('strategic');
+    const taxonomyCode = isStrategic ? 'ST' : 'OP';
+    const prefix = `${deptCode}-${taxonomyCode}`;
+
+    const result = await client.query(
+        `SELECT COUNT(DISTINCT risk_uid) AS cnt FROM risks WHERE company_id = $1 AND risk_uid LIKE $2`,
+        [companyId, `${prefix}-%`]
+    );
+    const next = parseInt(result.rows[0].cnt, 10) + 1;
+    return `${prefix}-${String(next).padStart(4, '0')}`;
+}
+
+async function generateUniqueUid(client, companyId, table, uidColumn, prefix) {
+    const result = await client.query(`SELECT COUNT(DISTINCT ${uidColumn}) AS cnt FROM ${table} WHERE company_id = $1 AND ${uidColumn} LIKE $2`, [
+        companyId,
+        `${prefix}-%`,
+    ]);
+    const next = parseInt(result.rows[0].cnt, 10) + 1;
+    return `${prefix}-${String(next).padStart(4, '0')}`;
+}
+
+// ---- E: department scoping for the Manager role ----
+//
+// A NULL department on a Control/KRI/Issue (or empty applicable_to on an
+// Obligation) means "enterprise-wide" -- visible and editable by every
+// Manager, not just one department. Otherwise a Manager's view and edits
+// are scoped to their own department, matching the Risk Register pattern
+// from Phase 0.
+
+// SQL fragment + param for filtering a Manager's list view by department.
+// Returns null for Admin (no filter applied).
+function managerScopeClause(req, column, paramIndex) {
+    if (req.company.role !== 'Manager' || !req.company.department) return null;
+    return { clause: `(lower(${column}) = lower($${paramIndex}) OR ${column} IS NULL)`, value: req.company.department };
+}
+
+// Whether a Manager may view/edit a row with the given department value.
+function managerCanAccess(req, rowDepartment) {
+    if (req.company.role !== 'Manager') return true;
+    if (!rowDepartment) return true; // enterprise-wide
+    return !!req.company.department && rowDepartment.toLowerCase() === req.company.department.toLowerCase();
+}
+
+// Resolves the department to store on create/update. Admins may set any
+// value (including null/blank for "enterprise-wide"). Managers may only
+// assign items to their own department -- if they omit the field it
+// defaults to their department; an explicit different value is rejected.
+function resolveDepartmentForWrite(req, requestedDepartment) {
+    if (req.company.role === 'Admin') {
+        if (requestedDepartment === undefined) return { department: undefined };
+        return { department: requestedDepartment || null };
+    }
+    if (
+        requestedDepartment !== undefined &&
+        requestedDepartment !== null &&
+        requestedDepartment !== '' &&
+        (!req.company.department || requestedDepartment.toLowerCase() !== req.company.department.toLowerCase())
+    ) {
+        return { error: 'Managers can only assign items to their own department.' };
+    }
+    return { department: req.company.department || null };
+}
+
+// Green/Amber/Red per B3: Red = regulatory limit breached, Amber = internal
+// tolerance breached, Green = within tolerance. Returns null if the KRI has
+// no thresholds configured (trend/visibility only) or no value yet.
+function computeKriBand(kri, value) {
+    if (value === null || value === undefined) return null;
+    const breaches = (threshold) => {
+        if (threshold === null || threshold === undefined) return false;
+        return kri.breach_direction === 'below' ? Number(value) < Number(threshold) : Number(value) > Number(threshold);
+    };
+    if (breaches(kri.regulatory_limit)) return 'Red';
+    if (breaches(kri.internal_tolerance)) return 'Amber';
+    if (kri.regulatory_limit == null && kri.internal_tolerance == null) return null;
+    return 'Green';
+}
+
+async function attachControlsAndMitigations(risks) {
+    if (risks.length === 0) return risks;
+    const ids = risks.map((r) => r.id);
+
+    const [controlsRes, mitigationsRes, krisRes] = await Promise.all([
+        pool.query(
+            `SELECT rc.risk_id, cl.id, cl.control_uid, cl.name, cl.owner, cl.control_type, cl.automation,
+                    cl.testing_frequency, cl.last_test_date, cl.last_test_result
+             FROM risk_controls rc JOIN controls_lib cl ON cl.id = rc.control_id
+             WHERE rc.risk_id = ANY($1::int[])`,
+            [ids]
+        ),
+        pool.query('SELECT * FROM mitigations WHERE risk_id = ANY($1::int[])', [ids]),
+        pool.query(
+            `SELECT rk.risk_id, k.id, k.kri_uid, k.name, k.threshold_source, k.internal_tolerance, k.regulatory_limit,
+                    k.breach_direction,
+                    (SELECT value FROM kri_measurements m WHERE m.kri_id = k.id ORDER BY measurement_date DESC, id DESC LIMIT 1) AS current_value
+             FROM risk_kris rk JOIN kris k ON k.id = rk.kri_id
+             WHERE rk.risk_id = ANY($1::int[])`,
+            [ids]
+        ),
+    ]);
+
+    const controlsByRisk = {};
+    for (const c of controlsRes.rows) {
+        (controlsByRisk[c.risk_id] = controlsByRisk[c.risk_id] || []).push({
+            id: c.id,
+            control_uid: c.control_uid,
+            name: c.name,
+            owner: c.owner,
+            control_type: c.control_type,
+            automation: c.automation,
+            testing_frequency: c.testing_frequency,
+            last_test_date: c.last_test_date,
+            last_test_result: c.last_test_result,
+        });
+    }
+
+    const mitigationsByRisk = {};
+    for (const m of mitigationsRes.rows) {
+        (mitigationsByRisk[m.risk_id] = mitigationsByRisk[m.risk_id] || []).push({
+            action: m.action,
+            start_date: m.start_date,
+            end_date: m.end_date,
+            status: m.status,
+        });
+    }
+
+    const krisByRisk = {};
+    for (const k of krisRes.rows) {
+        (krisByRisk[k.risk_id] = krisByRisk[k.risk_id] || []).push({
+            id: k.id,
+            kri_uid: k.kri_uid,
+            name: k.name,
+            current_value: k.current_value,
+            band: computeKriBand(k, k.current_value),
+        });
+    }
+
+    return risks.map((r) => {
+        const controls = controlsByRisk[r.id] || [];
+        const residualScore = r.residual_likelihood * r.residual_impact;
+
+        // G5/G6 (Risk Register enhancements): flag when residual risk
+        // exceeds the owner-defined appetite, and when a linked control
+        // has been tested as non-Effective more recently than this risk
+        // version's last assessment -- a nudge that the residual score
+        // may no longer reflect reality.
+        const appetiteBreach = r.tolerance_threshold_score != null && residualScore > r.tolerance_threshold_score;
+        const reassessmentRecommended = controls.some((c) => {
+            if (!c.last_test_date || c.last_test_result === 'Effective' || c.last_test_result === 'Not Tested') return false;
+            if (!r.last_evaluated_timestamp) return true;
+            return new Date(c.last_test_date).getTime() > Number(r.last_evaluated_timestamp);
+        });
+
+        return {
+            ...r,
+            controls,
+            mitigations: mitigationsByRisk[r.id] || [],
+            kris: krisByRisk[r.id] || [],
+            residual_score: residualScore,
+            appetite_breach: appetiteBreach,
+            reassessment_recommended: reassessmentRecommended,
+        };
+    });
+}
+
+// ============================================================
+// Auth middleware
+// ============================================================
+
+// Validates the session token (Bearer), slides its expiry (G8 10-min
+// idle timeout), and loads the user. Attaches req.user and req.session.
+const authenticate = asyncHandler(async (req, res, next) => {
+    const header = req.headers['authorization'] || '';
+    const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+    if (!token) return res.status(401).json({ error: 'Authentication required' });
+
+    const session = await touchSession(token);
+    if (!session) return res.status(401).json({ error: 'Session expired or invalid, please log in again' });
+
+    const userRes = await pool.query('SELECT * FROM users WHERE id = $1 AND is_active = true', [session.user_id]);
+    const user = userRes.rows[0];
+    if (!user) return res.status(401).json({ error: 'Account not found or deactivated' });
+
+    req.user = user;
+    req.session = session;
+    next();
+});
+
+// Blocks everything except auth self-service endpoints until a forced
+// password change (must_change_password) is completed.
+function requirePasswordCurrent(req, res, next) {
+    if (req.user.must_change_password) {
+        return res.status(403).json({ error: 'Password change required', code: 'PASSWORD_CHANGE_REQUIRED' });
+    }
+    next();
+}
+
+// Loads the user's role/department for the session's active company
+// and attaches it as req.company. Super-admins get implicit Admin
+// access to any company.
+const requireCompany = asyncHandler(async (req, res, next) => {
+    const companyId = req.session.active_company_id;
+    if (!companyId) {
+        const companies = await getUserCompanies(req.user);
+        return res.status(409).json({ error: 'No active company selected', code: 'NO_ACTIVE_COMPANY', companies });
+    }
+
+    const companyRes = await pool.query('SELECT * FROM companies WHERE id = $1 AND is_active = true', [companyId]);
+    const company = companyRes.rows[0];
+    if (!company) return res.status(404).json({ error: 'Company not found' });
+
+    if (req.user.is_super_admin) {
+        req.company = { ...company, role: 'Admin', functional_role: 'Super Admin', department: null };
+        return next();
+    }
+
+    const ucRes = await pool.query('SELECT * FROM user_companies WHERE user_id = $1 AND company_id = $2', [
+        req.user.id,
+        companyId,
+    ]);
+    if (ucRes.rows.length === 0) return res.status(403).json({ error: 'You do not have access to this company' });
+
+    req.company = { ...company, ...ucRes.rows[0] };
+    next();
+});
+
+function requireRole(...roles) {
+    return (req, res, next) => {
+        if (!roles.includes(req.company.role)) {
+            return res.status(403).json({ error: `This action requires one of: ${roles.join(', ')}` });
+        }
+        next();
+    };
+}
+
+// Returns the list of companies (with role) a user has access to.
+async function getUserCompanies(user) {
+    if (user.is_super_admin) {
+        const result = await pool.query('SELECT id, name, code, branding_logo_url, branding_primary_color FROM companies WHERE is_active = true ORDER BY name');
+        return result.rows.map((c) => ({ ...c, role: 'Admin' }));
+    }
+    const result = await pool.query(
+        `SELECT c.id, c.name, c.code, c.branding_logo_url, c.branding_primary_color, uc.role, uc.department, uc.functional_role
+         FROM user_companies uc JOIN companies c ON c.id = uc.company_id
+         WHERE uc.user_id = $1 AND c.is_active = true ORDER BY c.name`,
+        [user.id]
+    );
+    return result.rows;
+}
+
+function publicUser(user) {
+    return {
+        id: user.id,
+        email: user.email,
+        full_name: user.full_name,
+        is_super_admin: user.is_super_admin,
+        must_change_password: user.must_change_password,
+    };
+}
+
+// ============================================================
+// Auth routes
+// ============================================================
+
+// G9: per-client branding. Unauthenticated, since the login screen
+// needs it before any session exists. With "one application instance
+// per client" (G1), branding is effectively instance-wide -- this
+// returns the lowest-id active company's branding, which in practice is
+// the client's primary/holding company. Per-company branding for
+// subsidiaries (post-login) is still available via /api/auth/me.
+app.get(
+    '/api/branding',
+    asyncHandler(async (req, res) => {
+        const result = await pool.query(
+            `SELECT name, branding_logo_url, branding_primary_color FROM companies WHERE is_active = true ORDER BY id LIMIT 1`
+        );
+        if (result.rows.length === 0) return res.json({ name: null, branding_logo_url: null, branding_primary_color: '#2563eb' });
+        res.json(result.rows[0]);
+    })
+);
+
+app.post(
+    '/api/auth/login',
+    asyncHandler(async (req, res) => {
+        const { email, password } = req.body;
+        if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
+
+        const userRes = await pool.query('SELECT * FROM users WHERE email = $1', [email.toLowerCase().trim()]);
+        const user = userRes.rows[0];
+
+        // Same response whether the user doesn't exist or the password is wrong,
+        // so the endpoint can't be used to enumerate accounts.
+        const genericFail = () => res.status(401).json({ error: 'Invalid email or password' });
+
+        if (!user || !user.is_active) return genericFail();
+
+        if (isLocked(user)) {
+            return res.status(423).json({
+                error: `Account locked due to repeated failed logins. Try again after ${new Date(user.locked_until).toLocaleString()}.`,
+            });
+        }
+
+        const match = await bcrypt.compare(password, user.password_hash);
+        if (!match) {
+            const attempts = await recordFailedLogin(user.id);
+            await logAudit(null, { entityType: 'user', entityId: user.id, action: 'login_failed', actor: user, details: { attempts } });
+            return genericFail();
+        }
+
+        await resetFailedLogins(user.id);
+
+        const companies = await getUserCompanies(user);
+        const activeCompanyId = companies.length === 1 ? companies[0].id : null;
+
+        const session = await createSession(user.id, activeCompanyId);
+        await logAudit(null, { entityType: 'user', entityId: user.id, action: 'login', actor: user, companyId: activeCompanyId });
+
+        res.json({
+            token: session.token,
+            idleTimeoutMinutes: session.idleTimeoutMinutes,
+            user: publicUser(user),
+            passwordExpired: isPasswordExpired(user),
+            companies,
+            activeCompanyId,
+        });
+    })
+);
+
+app.post(
+    '/api/auth/logout',
+    authenticate,
+    asyncHandler(async (req, res) => {
+        const header = req.headers['authorization'] || '';
+        const token = header.slice(7);
+        await destroySession(token);
+        res.json({ message: 'Logged out' });
+    })
+);
+
+app.get(
+    '/api/auth/me',
+    authenticate,
+    asyncHandler(async (req, res) => {
+        const companies = await getUserCompanies(req.user);
+        res.json({
+            user: publicUser(req.user),
+            passwordExpired: isPasswordExpired(req.user),
+            companies,
+            activeCompanyId: req.session.active_company_id,
+            idleTimeoutMinutes: SESSION_IDLE_TIMEOUT_MINUTES,
+        });
+    })
+);
+
+app.post(
+    '/api/auth/switch-company',
+    authenticate,
+    asyncHandler(async (req, res) => {
+        const { company_id } = req.body;
+        const companies = await getUserCompanies(req.user);
+        const match = companies.find((c) => c.id === company_id);
+        if (!match) return res.status(403).json({ error: 'You do not have access to this company' });
+
+        const header = req.headers['authorization'] || '';
+        await setActiveCompany(header.slice(7), company_id);
+        res.json({ activeCompanyId: company_id, role: match.role });
+    })
+);
+
+app.post(
+    '/api/auth/change-password',
+    authenticate,
+    asyncHandler(async (req, res) => {
+        const { currentPassword, newPassword } = req.body;
+        if (!currentPassword || !newPassword) {
+            return res.status(400).json({ error: 'Current and new password are required' });
+        }
+
+        const match = await bcrypt.compare(currentPassword, req.user.password_hash);
+        if (!match) return res.status(401).json({ error: 'Current password is incorrect' });
+
+        const policyIssues = validatePasswordPolicy(newPassword);
+        if (policyIssues.length > 0) {
+            return res.status(400).json({ error: `Password must ${policyIssues.join(', ')}` });
+        }
+
+        if (await isPasswordReused(req.user.id, newPassword)) {
+            return res.status(400).json({ error: 'New password must not match any of your last 5 passwords' });
+        }
+
+        await setPassword(req.user.id, newPassword);
+        await logAudit(null, { entityType: 'user', entityId: req.user.id, action: 'password_changed', actor: req.user });
+
+        res.json({ message: 'Password updated' });
+    })
+);
+
+// ============================================================
+// From here on, every route requires an authenticated user with a
+// current password and an active company context.
+// ============================================================
+app.use('/api', authenticate, requirePasswordCurrent, requireCompany);
+
+// ============================================================
+// Risk categories (taxonomy) -- per company
+// ============================================================
+
+app.get(
+    '/api/categories',
+    asyncHandler(async (req, res) => {
+        const result = await pool.query(
+            'SELECT name FROM risk_categories WHERE company_id = $1 ORDER BY sort_order, name',
+            [req.company.id]
+        );
+        res.json(result.rows.map((r) => r.name));
+    })
+);
+
+app.post(
+    '/api/categories',
+    requireRole('Admin'),
+    asyncHandler(async (req, res) => {
+        const category = (req.body.category || '').trim();
+        if (!category) return res.status(400).json({ error: 'Category name is required' });
+
+        try {
+            await pool.query(
+                `INSERT INTO risk_categories (company_id, name, sort_order)
+                 VALUES ($1, $2, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM risk_categories WHERE company_id = $1))`,
+                [req.company.id, category]
+            );
+        } catch (e) {
+            if (e.code === '23505') return res.status(400).json({ error: 'Invalid or duplicate category taxonomy.' });
+            throw e;
+        }
+
+        const result = await pool.query(
+            'SELECT name FROM risk_categories WHERE company_id = $1 ORDER BY sort_order, name',
+            [req.company.id]
+        );
+        res.status(201).json(result.rows.map((r) => r.name));
+    })
+);
+
+app.delete(
+    '/api/categories',
+    requireRole('Admin'),
+    asyncHandler(async (req, res) => {
+        await pool.query('DELETE FROM risk_categories WHERE company_id = $1 AND name = $2', [
+            req.company.id,
+            req.body.category,
+        ]);
+        const result = await pool.query(
+            'SELECT name FROM risk_categories WHERE company_id = $1 ORDER BY sort_order, name',
+            [req.company.id]
+        );
+        res.json(result.rows.map((r) => r.name));
+    })
+);
+
+// ============================================================
+// Risk cause/consequence taxonomy (controlled vocabulary)
+// ============================================================
+//
+// Free-text risk_cause/risk_consequence fields fragment into near-duplicate
+// phrasing over time ("system outage" vs "IT system failure" vs
+// "technology disruption"). These endpoints back a "pick from a list, or
+// add your own" control on the Risk form -- any Admin/Manager can add a
+// new term (it's then available to everyone), keeping the vocabulary
+// curated without a separate admin step blocking day-to-day use.
+
+const TAXONOMY_TYPES = ['cause', 'consequence'];
+
+app.get(
+    '/api/taxonomies/:type',
+    asyncHandler(async (req, res) => {
+        if (!TAXONOMY_TYPES.includes(req.params.type)) return res.status(404).json({ error: 'Unknown taxonomy type' });
+        const result = await pool.query(
+            'SELECT name FROM risk_taxonomy_terms WHERE company_id = $1 AND term_type = $2 ORDER BY sort_order, name',
+            [req.company.id, req.params.type]
+        );
+        res.json(result.rows.map((r) => r.name));
+    })
+);
+
+app.post(
+    '/api/taxonomies/:type',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        if (!TAXONOMY_TYPES.includes(req.params.type)) return res.status(404).json({ error: 'Unknown taxonomy type' });
+        const name = (req.body.name || '').trim();
+        if (!name) return res.status(400).json({ error: 'name is required' });
+
+        await pool.query(
+            `INSERT INTO risk_taxonomy_terms (company_id, term_type, name, sort_order)
+             VALUES ($1, $2::varchar(20), $3, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM risk_taxonomy_terms WHERE company_id = $1 AND term_type = $2::varchar(20)))
+             ON CONFLICT (company_id, term_type, name) DO NOTHING`,
+            [req.company.id, req.params.type, name]
+        );
+
+        const result = await pool.query(
+            'SELECT name FROM risk_taxonomy_terms WHERE company_id = $1 AND term_type = $2 ORDER BY sort_order, name',
+            [req.company.id, req.params.type]
+        );
+        res.status(201).json(result.rows.map((r) => r.name));
+    })
+);
+
+app.delete(
+    '/api/taxonomies/:type',
+    requireRole('Admin'),
+    asyncHandler(async (req, res) => {
+        if (!TAXONOMY_TYPES.includes(req.params.type)) return res.status(404).json({ error: 'Unknown taxonomy type' });
+        await pool.query('DELETE FROM risk_taxonomy_terms WHERE company_id = $1 AND term_type = $2 AND name = $3', [
+            req.company.id, req.params.type, req.body.name,
+        ]);
+        const result = await pool.query(
+            'SELECT name FROM risk_taxonomy_terms WHERE company_id = $1 AND term_type = $2 ORDER BY sort_order, name',
+            [req.company.id, req.params.type]
+        );
+        res.json(result.rows.map((r) => r.name));
+    })
+);
+
+
+app.get(
+    '/api/matrix/config',
+    asyncHandler(async (req, res) => {
+        const result = await pool.query(
+            'SELECT current_dimensions, fiscal_year_start_month FROM matrix_settings WHERE company_id = $1',
+            [req.company.id]
+        );
+        const row = result.rows[0] || { current_dimensions: '5x5', fiscal_year_start_month: 0 };
+        res.json({ currentDimensions: row.current_dimensions, fiscalYearStartMonth: row.fiscal_year_start_month });
+    })
+);
+
+app.post(
+    '/api/matrix/config',
+    requireRole('Admin'),
+    asyncHandler(async (req, res) => {
+        const current = await pool.query(
+            'SELECT current_dimensions, fiscal_year_start_month FROM matrix_settings WHERE company_id = $1',
+            [req.company.id]
+        );
+        const row = current.rows[0] || { current_dimensions: '5x5', fiscal_year_start_month: 0 };
+
+        const newDimensions = req.body.dimensions || row.current_dimensions;
+        const newFiscalStart =
+            req.body.fiscalYearStartMonth !== undefined
+                ? parseInt(req.body.fiscalYearStartMonth, 10)
+                : row.fiscal_year_start_month;
+
+        await pool.query(
+            `INSERT INTO matrix_settings (company_id, current_dimensions, fiscal_year_start_month)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (company_id) DO UPDATE SET current_dimensions = $2, fiscal_year_start_month = $3`,
+            [req.company.id, newDimensions, newFiscalStart]
+        );
+
+        await logAudit(null, {
+            companyId: req.company.id,
+            entityType: 'matrix_settings',
+            entityId: req.company.id,
+            action: 'update',
+            actor: req.user,
+            details: { dimensions: newDimensions, fiscalYearStartMonth: newFiscalStart },
+        });
+
+        res.json({ currentDimensions: newDimensions, fiscalYearStartMonth: newFiscalStart });
+    })
+);
+
+// ============================================================
+// Branding (G9) -- per-client logo + primary color
+// ============================================================
+//
+// branding_logo_url accepts either an external URL or a data: URI (for
+// uploaded images, encoded client-side) -- see frontend Branding page.
+// Capped well under Postgres's TEXT limit but large enough for a
+// reasonably-sized logo; the frontend additionally caps uploads to keep
+// this practical.
+
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
+app.get(
+    '/api/companies/current/branding',
+    asyncHandler(async (req, res) => {
+        const result = await pool.query('SELECT name, branding_logo_url, branding_primary_color FROM companies WHERE id = $1', [req.company.id]);
+        res.json(result.rows[0] || { name: null, branding_logo_url: null, branding_primary_color: '#2563eb' });
+    })
+);
+
+app.patch(
+    '/api/companies/current/branding',
+    requireRole('Admin'),
+    asyncHandler(async (req, res) => {
+        const { branding_logo_url, branding_primary_color } = req.body;
+
+        if (branding_primary_color !== undefined && branding_primary_color !== null && !HEX_COLOR_RE.test(branding_primary_color)) {
+            return res.status(400).json({ error: 'branding_primary_color must be a hex color like #2563eb' });
+        }
+        if (typeof branding_logo_url === 'string' && branding_logo_url.length > 2_000_000) {
+            return res.status(400).json({ error: 'Logo is too large (max ~1.5MB)' });
+        }
+
+        const updates = [];
+        const values = [];
+        if (branding_logo_url !== undefined) {
+            values.push(branding_logo_url || null);
+            updates.push(`branding_logo_url = $${values.length}`);
+        }
+        if (branding_primary_color !== undefined) {
+            values.push(branding_primary_color || '#2563eb');
+            updates.push(`branding_primary_color = $${values.length}`);
+        }
+        if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+
+        values.push(req.company.id);
+        const result = await pool.query(
+            `UPDATE companies SET ${updates.join(', ')} WHERE id = $${values.length} RETURNING name, branding_logo_url, branding_primary_color`,
+            values
+        );
+
+        await logAudit(null, {
+            companyId: req.company.id,
+            entityType: 'company',
+            entityId: req.company.id,
+            action: 'branding_update',
+            actor: req.user,
+            details: { branding_primary_color: result.rows[0].branding_primary_color, logo_changed: branding_logo_url !== undefined },
+        });
+
+        res.json(result.rows[0]);
+    })
+);
+
+app.get(
+    '/api/risks',
+    asyncHandler(async (req, res) => {
+        const { role, department } = req.company;
+
+        if (role === 'Viewer') {
+            // Per spec E: Viewers get published policies + their own tasks,
+            // not the risk register itself.
+            return res.status(403).json({ error: 'Viewers do not have access to the risk register' });
+        }
+
+        // Closed risks (see POST /api/risks/:id/close) are hidden from
+        // the working register by default -- pass ?include_closed=true to
+        // see them (e.g. for a historical/audit view). "Closed" is
+        // determined by the LATEST version of a risk_uid, so the full
+        // version history of a now-closed risk stays available when
+        // requested, rather than disappearing version-by-version.
+        const includeClosed = req.query.include_closed === 'true';
+        // Exclude any risk_uid whose latest version is Closed, unless include_closed.
+        const closedClause = includeClosed
+            ? ''
+            : `AND risk_uid NOT IN (
+                 SELECT risk_uid FROM risks r3 WHERE r3.company_id = risks.company_id AND r3.risk_status = 'Closed'
+                   AND r3.version = (SELECT MAX(version) FROM risks r4 WHERE r4.company_id = r3.company_id AND r4.risk_uid = r3.risk_uid)
+               )`;
+
+        let result;
+        if (role === 'Manager' && department) {
+            result = await pool.query(
+                `SELECT * FROM risks WHERE company_id = $1 AND lower(department) = lower($2) ${closedClause} ORDER BY id`,
+                [req.company.id, department]
+            );
+        } else {
+            result = await pool.query(`SELECT * FROM risks WHERE company_id = $1 ${closedClause} ORDER BY id`, [req.company.id]);
+        }
+
+        res.json(await attachControlsAndMitigations(result.rows));
+    })
+);
+
+app.post(
+    '/api/risks',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const { role } = req.company;
+        const initialStatus = role === 'Admin' ? 'Approved' : 'Awaiting Approval';
+
+        const currentResL = parseInt(req.body.residual_likelihood, 10) || 5;
+        const currentResI = parseInt(req.body.residual_impact, 10) || 5;
+        const currentResScore = currentResL * currentResI;
+
+        // B1: "Accept" treatment requires a documented rationale and a
+        // sign-off from someone other than a self-approving Manager (E).
+        const treatmentStrategy = req.body.treatment_strategy || 'Mitigate / Treat (ISO Standard Target)';
+        if (treatmentStrategy === 'Accept') {
+            if (!req.body.treatment_plan_rationale || !req.body.accept_approved_by) {
+                return res.status(400).json({
+                    error: '"Accept" treatment requires a treatment plan rationale and an approver (Approved By).',
+                });
+            }
+            if (role === 'Manager' && req.body.accept_approved_by.toLowerCase() === req.user.email.toLowerCase()) {
+                return res.status(400).json({ error: 'A Manager cannot self-approve a "Risk Accepted" disposition.' });
+            }
+        }
+
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+
+            let targetUid = req.body.risk_uid;
+            let targetVersion = 1;
+            let calculatedTrend = 'STABLE';
+
+            if (targetUid && targetUid !== 'null' && targetUid !== 'undefined') {
+                targetUid = targetUid.trim();
+                const parentRes = await client.query(
+                    'SELECT * FROM risks WHERE company_id = $1 AND risk_uid = $2 ORDER BY version DESC LIMIT 1',
+                    [req.company.id, targetUid]
+                );
+                if (parentRes.rows.length > 0) {
+                    const parent = parentRes.rows[0];
+                    targetVersion = parent.version + 1;
+
+                    const parentScore = parent.residual_likelihood * parent.residual_impact;
+                    if (currentResScore < parentScore) calculatedTrend = 'DECREASED';
+                    else if (currentResScore > parentScore) calculatedTrend = 'INCREASED';
+                    else calculatedTrend = 'STABLE';
+                }
+            } else {
+                targetUid = await generateUniqueRiskID(client, req.company.id, req.body.department, req.body.risk_category);
+            }
+
+            const matrixRes = await client.query('SELECT fiscal_year_start_month FROM matrix_settings WHERE company_id = $1', [
+                req.company.id,
+            ]);
+            const startMonth = matrixRes.rows[0]?.fiscal_year_start_month || 0;
+            const now = new Date();
+            let monthsSinceStart = now.getMonth() - startMonth;
+            if (monthsSinceStart < 0) monthsSinceStart += 12;
+            const quarterIndex = Math.floor(monthsSinceStart / 3) + 1;
+            const reportingQuarter = `Q${quarterIndex}-FY${now.getFullYear()}`;
+
+            const VELOCITIES = ['Immediate (<1 month)', 'Short-term (1-6 months)', 'Medium-term (6-12 months)', 'Long-term (>12 months)'];
+            const riskVelocity = VELOCITIES.includes(req.body.risk_velocity) ? req.body.risk_velocity : null;
+            const toleranceScore = req.body.tolerance_threshold_score !== undefined && req.body.tolerance_threshold_score !== null && req.body.tolerance_threshold_score !== ''
+                ? Math.min(25, Math.max(1, parseInt(req.body.tolerance_threshold_score, 10)))
+                : null;
+
+            const insertRes = await client.query(
+                `INSERT INTO risks (
+                    company_id, risk_uid, version, reporting_quarter, department, risk_category, sub_category,
+                    risk_detail, risk_cause, risk_consequence, risk_owner, risk_consulted, risk_informed, treatment_strategy,
+                    inherent_likelihood, inherent_impact, residual_likelihood, residual_impact,
+                    tolerance_threshold, treatment_plan_rationale, accept_approved_by,
+                    review_frequency, next_review_date, framework_reference,
+                    approval_status, assessed_by, change_reason, directional_trend,
+                    last_evaluated_timestamp, escalation_justification,
+                    tolerance_threshold_score, risk_velocity
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
+                RETURNING *`,
+                [
+                    req.company.id,
+                    targetUid,
+                    targetVersion,
+                    reportingQuarter,
+                    req.body.department,
+                    req.body.risk_category || 'Operational Risk',
+                    req.body.sub_category || 'Process Risk',
+                    req.body.risk_detail,
+                    req.body.risk_cause || null,
+                    req.body.risk_consequence || null,
+                    req.body.risk_owner || null,
+                    req.body.risk_consulted || null,
+                    req.body.risk_informed || null,
+                    treatmentStrategy,
+                    parseInt(req.body.inherent_likelihood, 10) || 5,
+                    parseInt(req.body.inherent_impact, 10) || 5,
+                    currentResL,
+                    currentResI,
+                    req.body.tolerance_threshold || null,
+                    req.body.treatment_plan_rationale || null,
+                    req.body.accept_approved_by || null,
+                    req.body.review_frequency || 'Annual',
+                    req.body.next_review_date || null,
+                    req.body.framework_reference || null,
+                    initialStatus,
+                    req.user.email,
+                    req.body.change_reason || (targetVersion === 1 ? 'Baseline Entry Ingestion' : 'Interim Shift Assessment Update'),
+                    calculatedTrend,
+                    Date.now(),
+                    req.body.escalation_justification || '',
+                    toleranceScore,
+                    riskVelocity,
+                ]
+            );
+
+            const newRisk = insertRes.rows[0];
+
+            // New controls created inline go straight into the Control
+            // Library (B2), linked to this risk via risk_controls.
+            const newControls = req.body.controls || [];
+            for (const c of newControls) {
+                if (!c.title) continue;
+                const uid = await generateUniqueUid(client, req.company.id, 'controls_lib', 'control_uid', 'CTL');
+                const insertControl = await client.query(
+                    `INSERT INTO controls_lib (company_id, control_uid, name, owner, control_type, automation, testing_frequency)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+                    [
+                        req.company.id,
+                        uid,
+                        c.title,
+                        c.owner || 'Departmental',
+                        c.control_type || 'Preventive',
+                        c.automation || 'Manual',
+                        c.testing_frequency || 'Quarterly',
+                    ]
+                );
+                await client.query('INSERT INTO risk_controls (risk_id, control_id) VALUES ($1, $2)', [newRisk.id, insertControl.rows[0].id]);
+            }
+
+            // Link existing Control Library entries and KRIs.
+            for (const controlId of req.body.link_control_ids || []) {
+                await client.query('INSERT INTO risk_controls (risk_id, control_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [
+                    newRisk.id,
+                    controlId,
+                ]);
+            }
+            for (const kriId of req.body.link_kri_ids || []) {
+                await client.query('INSERT INTO risk_kris (risk_id, kri_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [newRisk.id, kriId]);
+            }
+
+            const mitigations = req.body.mitigations || [];
+            for (const m of mitigations) {
+                await client.query(
+                    'INSERT INTO mitigations (risk_id, action, start_date, end_date, status) VALUES ($1, $2, $3, $4, $5)',
+                    [newRisk.id, m.action, m.start_date || null, m.end_date || null, m.status || 'Pending']
+                );
+            }
+
+            await logAudit(client, {
+                companyId: req.company.id,
+                entityType: 'risk',
+                entityId: newRisk.id,
+                action: 'create',
+                actor: req.user,
+                details: { risk_uid: targetUid, version: targetVersion, approval_status: initialStatus },
+            });
+
+            await client.query('COMMIT');
+
+            const [enriched] = await attachControlsAndMitigations([newRisk]);
+            res.status(201).json(enriched);
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
+        }
+    })
+);
+
+app.post(
+    '/api/risks/:id/approve',
+    requireRole('Admin'),
+    asyncHandler(async (req, res) => {
+        const result = await pool.query(
+            `UPDATE risks SET approval_status = 'Approved', last_evaluated_timestamp = $1
+             WHERE id = $2 AND company_id = $3 RETURNING *`,
+            [Date.now(), req.params.id, req.company.id]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+
+        await logAudit(null, {
+            companyId: req.company.id,
+            entityType: 'risk',
+            entityId: result.rows[0].id,
+            action: 'approve',
+            actor: req.user,
+        });
+
+        const [enriched] = await attachControlsAndMitigations(result.rows);
+        res.json(enriched);
+    })
+);
+
+// Columns carried forward when cloning a risk into a new version (all
+// except id/created_at, which are auto-generated, and version/risk_status/
+// closure_reason/change_reason/last_evaluated_timestamp, which the caller
+// sets explicitly).
+const RISK_CLONE_COLUMNS = [
+    'company_id', 'risk_uid', 'reporting_quarter', 'department', 'risk_category', 'sub_category',
+    'risk_detail', 'risk_cause', 'risk_consequence', 'risk_owner', 'risk_consulted', 'risk_informed',
+    'treatment_strategy', 'inherent_likelihood', 'inherent_impact', 'residual_likelihood', 'residual_impact',
+    'tolerance_threshold', 'tolerance_threshold_score', 'treatment_plan_rationale', 'accept_approved_by',
+    'review_frequency', 'next_review_date', 'framework_reference', 'risk_velocity',
+    'approval_status', 'assessed_by', 'directional_trend', 'escalation_justification',
+];
+
+// Risk Register lifecycle (G10-style versioning applied to closure): a
+// risk is never deleted. "Closing" or "reopening" inserts a new version
+// that's identical to the latest one except for risk_status,
+// closure_reason, and change_reason -- the full history stays intact and
+// auditable.
+async function cloneRiskAsNewVersion(client, latest, overrides, actorEmail) {
+    const cols = [...RISK_CLONE_COLUMNS, 'version', 'risk_status', 'closure_reason', 'change_reason', 'last_evaluated_timestamp'];
+    const values = RISK_CLONE_COLUMNS.map((c) => latest[c]);
+    values.push(latest.version + 1, overrides.risk_status, overrides.closure_reason ?? null, overrides.change_reason, Date.now());
+
+    const placeholders = cols.map((_, i) => `$${i + 1}`).join(',');
+    const insertRes = await client.query(
+        `INSERT INTO risks (${cols.join(', ')}) VALUES (${placeholders}) RETURNING *`,
+        values
+    );
+    return insertRes.rows[0];
+}
+
+app.post(
+    '/api/risks/:id/close',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        if (!req.body.closure_reason || !req.body.closure_reason.trim()) {
+            return res.status(400).json({ error: 'closure_reason is required' });
+        }
+
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            const current = await client.query('SELECT * FROM risks WHERE id = $1 AND company_id = $2', [req.params.id, req.company.id]);
+            if (current.rows.length === 0) {
+                await client.query('ROLLBACK');
+                return res.status(404).json({ error: 'Not found' });
+            }
+            const latest = await client.query(
+                'SELECT * FROM risks WHERE company_id = $1 AND risk_uid = $2 ORDER BY version DESC LIMIT 1',
+                [req.company.id, current.rows[0].risk_uid]
+            );
+            const row = latest.rows[0];
+            if (!managerCanAccess(req, row.department)) {
+                await client.query('ROLLBACK');
+                return res.status(403).json({ error: 'This risk belongs to a different department.' });
+            }
+            if (row.risk_status === 'Closed') {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ error: 'This risk is already closed.' });
+            }
+
+            const closed = await cloneRiskAsNewVersion(
+                client,
+                row,
+                { risk_status: 'Closed', closure_reason: req.body.closure_reason.trim(), change_reason: `Closed: ${req.body.closure_reason.trim()}` },
+                req.user.email
+            );
+
+            await logAudit(client, {
+                companyId: req.company.id,
+                entityType: 'risk',
+                entityId: closed.id,
+                action: 'close',
+                actor: req.user,
+                details: { risk_uid: row.risk_uid, version: closed.version, closure_reason: req.body.closure_reason.trim() },
+            });
+
+            await client.query('COMMIT');
+            const [enriched] = await attachControlsAndMitigations([closed]);
+            res.json(enriched);
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
+        }
+    })
+);
+
+app.post(
+    '/api/risks/:id/reopen',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            const current = await client.query('SELECT * FROM risks WHERE id = $1 AND company_id = $2', [req.params.id, req.company.id]);
+            if (current.rows.length === 0) {
+                await client.query('ROLLBACK');
+                return res.status(404).json({ error: 'Not found' });
+            }
+            const latest = await client.query(
+                'SELECT * FROM risks WHERE company_id = $1 AND risk_uid = $2 ORDER BY version DESC LIMIT 1',
+                [req.company.id, current.rows[0].risk_uid]
+            );
+            const row = latest.rows[0];
+            if (!managerCanAccess(req, row.department)) {
+                await client.query('ROLLBACK');
+                return res.status(403).json({ error: 'This risk belongs to a different department.' });
+            }
+            if (row.risk_status !== 'Closed') {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ error: 'This risk is not closed.' });
+            }
+
+            const reopened = await cloneRiskAsNewVersion(
+                client,
+                row,
+                { risk_status: 'Active', closure_reason: null, change_reason: 'Reopened' },
+                req.user.email
+            );
+
+            await logAudit(client, {
+                companyId: req.company.id,
+                entityType: 'risk',
+                entityId: reopened.id,
+                action: 'reopen',
+                actor: req.user,
+                details: { risk_uid: row.risk_uid, version: reopened.version },
+            });
+
+            await client.query('COMMIT');
+            const [enriched] = await attachControlsAndMitigations([reopened]);
+            res.json(enriched);
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
+        }
+    })
+);
+
+
+// ============================================================
+// Risk interdependencies (related risks)
+// ============================================================
+//
+// Simple, undirected cross-references between risks -- no scoring logic,
+// just "these two risks tend to move together / are part of the same
+// story" so a risk committee can see clusters instead of isolated rows.
+// Open to any Admin/Manager regardless of department (linking doesn't
+// expose data, it just records a relationship -- consistent with how
+// risk_controls/risk_kris links work).
+
+function sortedRiskUidPair(a, b) {
+    return a < b ? [a, b] : [b, a];
+}
+
+app.get(
+    '/api/risks/:uid/related',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const uid = req.params.uid;
+        const linksRes = await pool.query(
+            `SELECT risk_uid_a, risk_uid_b, note, created_by, created_at FROM risk_links
+             WHERE company_id = $1 AND (risk_uid_a = $2 OR risk_uid_b = $2) ORDER BY created_at`,
+            [req.company.id, uid]
+        );
+        const otherUids = linksRes.rows.map((l) => (l.risk_uid_a === uid ? l.risk_uid_b : l.risk_uid_a));
+
+        let riskInfo = {};
+        if (otherUids.length > 0) {
+            const risksRes = await pool.query(
+                `SELECT risk_uid, risk_detail, department, residual_likelihood, residual_impact FROM risks r WHERE company_id = $1 AND risk_uid = ANY($2::text[])
+                   AND version = (SELECT MAX(version) FROM risks r2 WHERE r2.company_id = r.company_id AND r2.risk_uid = r.risk_uid)`,
+                [req.company.id, otherUids]
+            );
+            riskInfo = Object.fromEntries(risksRes.rows.map((r) => [r.risk_uid, r]));
+        }
+
+        res.json(
+            linksRes.rows.map((l) => {
+                const otherUid = l.risk_uid_a === uid ? l.risk_uid_b : l.risk_uid_a;
+                const info = riskInfo[otherUid];
+                const accessible = !!info && managerCanAccess(req, info.department);
+                return {
+                    risk_uid: otherUid,
+                    note: l.note,
+                    accessible,
+                    risk_detail: accessible ? info.risk_detail : null,
+                    department: accessible ? info.department : null,
+                    residual_score: accessible ? info.residual_likelihood * info.residual_impact : null,
+                };
+            })
+        );
+    })
+);
+
+app.post(
+    '/api/risks/:uid/related',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const uid = req.params.uid;
+        const otherUid = (req.body.related_risk_uid || '').trim();
+        if (!otherUid) return res.status(400).json({ error: 'related_risk_uid is required' });
+        if (otherUid === uid) return res.status(400).json({ error: 'A risk cannot be related to itself' });
+
+        const exists = await pool.query('SELECT 1 FROM risks WHERE company_id = $1 AND risk_uid = $2 LIMIT 1', [req.company.id, otherUid]);
+        if (exists.rows.length === 0) return res.status(404).json({ error: `Risk ${otherUid} not found` });
+
+        const [a, b] = sortedRiskUidPair(uid, otherUid);
+        try {
+            await pool.query(
+                `INSERT INTO risk_links (company_id, risk_uid_a, risk_uid_b, note, created_by) VALUES ($1,$2,$3,$4,$5)
+                 ON CONFLICT (company_id, risk_uid_a, risk_uid_b) DO UPDATE SET note = EXCLUDED.note`,
+                [req.company.id, a, b, req.body.note || null, req.user.email]
+            );
+        } catch (e) {
+            if (e.code === '23514') return res.status(400).json({ error: 'Invalid risk pair' });
+            throw e;
+        }
+
+        await logAudit(null, {
+            companyId: req.company.id,
+            entityType: 'risk',
+            entityId: 0,
+            action: 'related_risk_added',
+            actor: req.user,
+            details: { risk_uid_a: a, risk_uid_b: b },
+        });
+
+        res.status(201).json({ risk_uid_a: a, risk_uid_b: b });
+    })
+);
+
+app.delete(
+    '/api/risks/:uid/related/:otherUid',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const [a, b] = sortedRiskUidPair(req.params.uid, req.params.otherUid);
+        await pool.query('DELETE FROM risk_links WHERE company_id = $1 AND risk_uid_a = $2 AND risk_uid_b = $3', [req.company.id, a, b]);
+        res.json({ ok: true });
+    })
+);
+
+
+app.get(
+    '/api/controls',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const scope = managerScopeClause(req, 'department', 2);
+        const controlsRes = await pool.query(
+            `SELECT * FROM controls_lib WHERE company_id = $1 ${scope ? `AND ${scope.clause}` : ''} ORDER BY control_uid`,
+            scope ? [req.company.id, scope.value] : [req.company.id]
+        );
+        const ids = controlsRes.rows.map((c) => c.id);
+
+        let linksByControl = {};
+        if (ids.length > 0) {
+            const linksRes = await pool.query(
+                `SELECT rc.control_id, r.id, r.risk_uid, r.department
+                 FROM risk_controls rc JOIN risks r ON r.id = rc.risk_id
+                 WHERE rc.control_id = ANY($1::int[]) AND r.version = (
+                    SELECT MAX(version) FROM risks r2 WHERE r2.company_id = r.company_id AND r2.risk_uid = r.risk_uid
+                 )`,
+                [ids]
+            );
+            for (const l of linksRes.rows) {
+                (linksByControl[l.control_id] = linksByControl[l.control_id] || []).push({
+                    id: l.id,
+                    risk_uid: l.risk_uid,
+                    department: l.department,
+                });
+            }
+        }
+
+        let openIssuesByControl = {};
+        if (ids.length > 0) {
+            const issuesRes = await pool.query(
+                `SELECT ic.control_id, COUNT(*) AS cnt FROM issue_controls ic
+                 JOIN issues i ON i.id = ic.issue_id
+                 WHERE ic.control_id = ANY($1::int[]) AND i.status = ANY($2::text[])
+                 GROUP BY ic.control_id`,
+                [ids, OPEN_ISSUE_STATUSES]
+            );
+            for (const row of issuesRes.rows) openIssuesByControl[row.control_id] = parseInt(row.cnt, 10);
+        }
+
+        res.json(
+            controlsRes.rows.map((c) => ({
+                ...c,
+                linked_risks: linksByControl[c.id] || [],
+                open_issues_count: openIssuesByControl[c.id] || 0,
+            }))
+        );
+    })
+);
+
+app.post(
+    '/api/controls',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        if (!req.body.name) return res.status(400).json({ error: 'Control name is required' });
+
+        const deptResult = resolveDepartmentForWrite(req, req.body.department);
+        if (deptResult.error) return res.status(400).json({ error: deptResult.error });
+
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            const uid = await generateUniqueUid(client, req.company.id, 'controls_lib', 'control_uid', 'CTL');
+            const insertRes = await client.query(
+                `INSERT INTO controls_lib (company_id, control_uid, name, description, control_type, automation, owner,
+                                            testing_frequency, evidence_required, framework_reference, accountable, consulted, informed, department)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+                [
+                    req.company.id,
+                    uid,
+                    req.body.name,
+                    req.body.description || null,
+                    req.body.control_type || 'Preventive',
+                    req.body.automation || 'Manual',
+                    req.body.owner || null,
+                    req.body.testing_frequency || 'Quarterly',
+                    req.body.evidence_required || null,
+                    req.body.framework_reference || null,
+                    req.body.accountable || null,
+                    req.body.consulted || null,
+                    req.body.informed || null,
+                    deptResult.department || null,
+                ]
+            );
+            const control = insertRes.rows[0];
+
+            for (const riskId of req.body.link_risk_ids || []) {
+                await client.query('INSERT INTO risk_controls (risk_id, control_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [
+                    riskId,
+                    control.id,
+                ]);
+            }
+
+            await logAudit(client, {
+                companyId: req.company.id,
+                entityType: 'control',
+                entityId: control.id,
+                action: 'create',
+                actor: req.user,
+                details: { control_uid: uid, name: control.name },
+            });
+
+            await client.query('COMMIT');
+            res.status(201).json({ ...control, linked_risks: [] });
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
+        }
+    })
+);
+
+app.patch(
+    '/api/controls/:id',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const current = await pool.query('SELECT * FROM controls_lib WHERE id = $1 AND company_id = $2', [req.params.id, req.company.id]);
+        if (current.rows.length === 0) return res.status(404).json({ error: 'Control not found' });
+        if (!managerCanAccess(req, current.rows[0].department)) {
+            return res.status(403).json({ error: 'This control belongs to a different department.' });
+        }
+
+        const fields = ['name', 'description', 'control_type', 'automation', 'owner', 'testing_frequency', 'evidence_required', 'framework_reference', 'accountable', 'consulted', 'informed'];
+        const updates = [];
+        const values = [];
+        for (const f of fields) {
+            if (req.body[f] !== undefined) {
+                values.push(req.body[f]);
+                updates.push(`${f} = $${values.length}`);
+            }
+        }
+
+        if (req.body.department !== undefined) {
+            const deptResult = resolveDepartmentForWrite(req, req.body.department);
+            if (deptResult.error) return res.status(400).json({ error: deptResult.error });
+            values.push(deptResult.department);
+            updates.push(`department = $${values.length}`);
+        }
+
+        if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+
+        values.push(req.params.id, req.company.id);
+        const result = await pool.query(
+            `UPDATE controls_lib SET ${updates.join(', ')} WHERE id = $${values.length - 1} AND company_id = $${values.length} RETURNING *`,
+            values
+        );
+
+        await logAudit(null, {
+            companyId: req.company.id,
+            entityType: 'control',
+            entityId: result.rows[0].id,
+            action: 'update',
+            actor: req.user,
+            details: req.body,
+        });
+
+        res.json(result.rows[0]);
+    })
+);
+
+// Link/unlink an existing control to a risk (e.g. from the risk register
+// "linked controls" picker, or from the Control Library itself).
+app.post(
+    '/api/controls/:id/link-risk',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        await pool.query('INSERT INTO risk_controls (risk_id, control_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [
+            req.body.risk_id,
+            req.params.id,
+        ]);
+        res.status(201).json({ message: 'Linked' });
+    })
+);
+
+app.delete(
+    '/api/controls/:id/link-risk/:riskId',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        await pool.query('DELETE FROM risk_controls WHERE control_id = $1 AND risk_id = $2', [req.params.id, req.params.riskId]);
+        res.json({ message: 'Unlinked' });
+    })
+);
+
+// Testing workflow (B2): each test (self-test or independent audit test) is
+// its own record. The control's summary last_test_* fields are updated to
+// reflect whichever test was just recorded -- status changes ONLY via test
+// results, never automatically from issue closure.
+app.post(
+    '/api/controls/:id/test',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const { test_type, test_date, result, notes, remediation_plan, remediation_owner, remediation_due_date } = req.body;
+        if (!test_date || !result) return res.status(400).json({ error: 'test_date and result are required' });
+        if (!['Effective', 'Partially Effective', 'Ineffective'].includes(result)) {
+            return res.status(400).json({ error: 'result must be Effective, Partially Effective, or Ineffective' });
+        }
+        // Mitigation Workflow: a Partially Effective/Ineffective result
+        // can't be submitted on its own -- the remediation action plan
+        // (and who owns it, and by when) must be captured in the same
+        // submission, not left for someone to add to the auto-created
+        // issue later.
+        if (result !== 'Effective') {
+            if (!remediation_plan || !remediation_plan.trim()) {
+                return res.status(400).json({ error: 'A Remediation Action Plan is required when the result is Partially Effective or Ineffective.' });
+            }
+            if (!remediation_owner || !remediation_owner.trim()) {
+                return res.status(400).json({ error: 'A remediation owner is required when the result is Partially Effective or Ineffective.' });
+            }
+            if (!remediation_due_date) {
+                return res.status(400).json({ error: 'A remediation due date is required when the result is Partially Effective or Ineffective.' });
+            }
+        }
+
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+
+            const controlCheck = await client.query('SELECT id, department FROM controls_lib WHERE id = $1 AND company_id = $2', [
+                req.params.id,
+                req.company.id,
+            ]);
+            if (controlCheck.rows.length === 0) {
+                await client.query('ROLLBACK');
+                return res.status(404).json({ error: 'Control not found' });
+            }
+            if (!managerCanAccess(req, controlCheck.rows[0].department)) {
+                await client.query('ROLLBACK');
+                return res.status(403).json({ error: 'This control belongs to a different department.' });
+            }
+
+            await client.query(
+                `INSERT INTO control_tests (control_id, test_type, test_date, result, notes, tested_by)
+                 VALUES ($1,$2,$3,$4,$5,$6)`,
+                [req.params.id, test_type || 'Self-Test', test_date, result, notes || null, req.user.email]
+            );
+
+            const updateRes = await client.query(
+                `UPDATE controls_lib SET last_test_date = $1, last_test_result = $2, test_notes = $3
+                 WHERE id = $4 RETURNING *`,
+                [test_date, result, notes || null, req.params.id]
+            );
+            const control = updateRes.rows[0];
+
+            await logAudit(client, {
+                companyId: req.company.id,
+                entityType: 'control',
+                entityId: req.params.id,
+                action: 'test_recorded',
+                actor: req.user,
+                details: { test_type: test_type || 'Self-Test', test_date, result },
+            });
+
+            // D: "one control can spawn multiple linked issues" -- every
+            // non-Effective test result automatically logs a new issue,
+            // pre-filled with the remediation plan captured above.
+            let createdIssue = null;
+            if (result !== 'Effective') {
+                createdIssue = await createIssue(client, req.company.id, req.user.email, {
+                    source_type: 'Self-identified (Control Test)',
+                    source_detail: `${test_type || 'Self-Test'} on ${test_date}${notes ? `: ${notes}` : ''}`,
+                    description: `Control ${control.control_uid} (${control.name}) tested as ${result}`,
+                    remediation_plan: remediation_plan.trim(),
+                    owner: remediation_owner.trim(),
+                    due_date: remediation_due_date,
+                    priority: result === 'Ineffective' ? 'High' : 'Medium',
+                    department: control.department || null,
+                    link_control_ids: [control.id],
+                    auto: true,
+                });
+            }
+
+            await client.query('COMMIT');
+            res.status(201).json({ ...control, created_issue: createdIssue });
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
+        }
+    })
+);
+
+app.get(
+    '/api/controls/:id/tests',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const result = await pool.query(
+            `SELECT ct.* FROM control_tests ct JOIN controls_lib cl ON cl.id = ct.control_id
+             WHERE ct.control_id = $1 AND cl.company_id = $2 ORDER BY ct.test_date DESC, ct.id DESC`,
+            [req.params.id, req.company.id]
+        );
+        res.json(result.rows);
+    })
+);
+
+// ============================================================
+// Key Risk Indicators (B3)
+// ============================================================
+
+app.get(
+    '/api/kris',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const scope = managerScopeClause(req, 'department', 2);
+        const krisRes = await pool.query(
+            `SELECT * FROM kris WHERE company_id = $1 ${scope ? `AND ${scope.clause}` : ''} ORDER BY kri_uid`,
+            scope ? [req.company.id, scope.value] : [req.company.id]
+        );
+        const ids = krisRes.rows.map((k) => k.id);
+
+        let measurementsByKri = {};
+        if (ids.length > 0) {
+            const measurementsRes = await pool.query(
+                `SELECT * FROM (
+                    SELECT kri_id, measurement_date, value,
+                           ROW_NUMBER() OVER (PARTITION BY kri_id ORDER BY measurement_date DESC, id DESC) AS rn
+                    FROM kri_measurements WHERE kri_id = ANY($1::int[])
+                 ) sub WHERE rn <= 12 ORDER BY measurement_date ASC`,
+                [ids]
+            );
+            for (const m of measurementsRes.rows) {
+                (measurementsByKri[m.kri_id] = measurementsByKri[m.kri_id] || []).push({
+                    measurement_date: m.measurement_date,
+                    value: m.value,
+                });
+            }
+        }
+
+        res.json(
+            krisRes.rows.map((k) => {
+                const history = measurementsByKri[k.id] || [];
+                const current = history.length > 0 ? history[history.length - 1].value : null;
+                return { ...k, history, current_value: current, band: computeKriBand(k, current) };
+            })
+        );
+    })
+);
+
+app.post(
+    '/api/kris',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        if (!req.body.name) return res.status(400).json({ error: 'KRI name is required' });
+
+        const deptResult = resolveDepartmentForWrite(req, req.body.department);
+        if (deptResult.error) return res.status(400).json({ error: deptResult.error });
+
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            const uid = await generateUniqueUid(client, req.company.id, 'kris', 'kri_uid', 'KRI');
+            const insertRes = await client.query(
+                `INSERT INTO kris (company_id, kri_uid, name, definition, owner, measurement_frequency,
+                                   threshold_source, internal_tolerance, regulatory_limit, regulatory_reference, breach_direction, department)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+                [
+                    req.company.id,
+                    uid,
+                    req.body.name,
+                    req.body.definition || null,
+                    req.body.owner || null,
+                    req.body.measurement_frequency || 'Monthly',
+                    req.body.threshold_source || 'None',
+                    req.body.internal_tolerance ?? null,
+                    req.body.regulatory_limit ?? null,
+                    req.body.regulatory_reference || null,
+                    req.body.breach_direction || 'above',
+                    deptResult.department || null,
+                ]
+            );
+            const kri = insertRes.rows[0];
+
+            for (const riskId of req.body.link_risk_ids || []) {
+                await client.query('INSERT INTO risk_kris (risk_id, kri_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [riskId, kri.id]);
+            }
+            for (const controlId of req.body.link_control_ids || []) {
+                await client.query('INSERT INTO control_kris (control_id, kri_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [controlId, kri.id]);
+            }
+
+            await logAudit(client, {
+                companyId: req.company.id,
+                entityType: 'kri',
+                entityId: kri.id,
+                action: 'create',
+                actor: req.user,
+                details: { kri_uid: uid, name: kri.name },
+            });
+
+            await client.query('COMMIT');
+            res.status(201).json({ ...kri, history: [], current_value: null, band: null });
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
+        }
+    })
+);
+
+app.patch(
+    '/api/kris/:id',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const current = await pool.query('SELECT * FROM kris WHERE id = $1 AND company_id = $2', [req.params.id, req.company.id]);
+        if (current.rows.length === 0) return res.status(404).json({ error: 'KRI not found' });
+        if (!managerCanAccess(req, current.rows[0].department)) {
+            return res.status(403).json({ error: 'This KRI belongs to a different department.' });
+        }
+
+        const fields = [
+            'name',
+            'definition',
+            'owner',
+            'measurement_frequency',
+            'threshold_source',
+            'internal_tolerance',
+            'regulatory_limit',
+            'regulatory_reference',
+            'breach_direction',
+        ];
+        const updates = [];
+        const values = [];
+        for (const f of fields) {
+            if (req.body[f] !== undefined) {
+                values.push(req.body[f]);
+                updates.push(`${f} = $${values.length}`);
+            }
+        }
+
+        if (req.body.department !== undefined) {
+            const deptResult = resolveDepartmentForWrite(req, req.body.department);
+            if (deptResult.error) return res.status(400).json({ error: deptResult.error });
+            values.push(deptResult.department);
+            updates.push(`department = $${values.length}`);
+        }
+
+        if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+
+        values.push(req.params.id, req.company.id);
+        const result = await pool.query(
+            `UPDATE kris SET ${updates.join(', ')} WHERE id = $${values.length - 1} AND company_id = $${values.length} RETURNING *`,
+            values
+        );
+
+        await logAudit(null, {
+            companyId: req.company.id,
+            entityType: 'kri',
+            entityId: result.rows[0].id,
+            action: 'update',
+            actor: req.user,
+            details: req.body,
+        });
+
+        res.json(result.rows[0]);
+    })
+);
+
+// Records a new measurement (B3: "Current value + trend (history)").
+app.post(
+    '/api/kris/:id/measurements',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const { measurement_date, value } = req.body;
+        if (!measurement_date || value === undefined || value === null) {
+            return res.status(400).json({ error: 'measurement_date and value are required' });
+        }
+
+        const kriRes = await pool.query('SELECT * FROM kris WHERE id = $1 AND company_id = $2', [req.params.id, req.company.id]);
+        if (kriRes.rows.length === 0) return res.status(404).json({ error: 'KRI not found' });
+        const kri = kriRes.rows[0];
+        if (!managerCanAccess(req, kri.department)) {
+            return res.status(403).json({ error: 'This KRI belongs to a different department.' });
+        }
+
+        const band = computeKriBand(kri, value);
+
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+
+            await client.query(
+                `INSERT INTO kri_measurements (kri_id, measurement_date, value, recorded_by) VALUES ($1,$2,$3,$4)`,
+                [req.params.id, measurement_date, value, req.user.email]
+            );
+
+            await logAudit(client, {
+                companyId: req.company.id,
+                entityType: 'kri',
+                entityId: kri.id,
+                action: 'measurement_recorded',
+                actor: req.user,
+                details: { measurement_date, value, band },
+            });
+
+            // D: a Red band reading is a regulatory/internal-tolerance
+            // breach -- log it as a KRI Breach issue automatically.
+            let createdIssue = null;
+            if (band === 'Red') {
+                createdIssue = await createIssue(client, req.company.id, req.user.email, {
+                    source_type: 'Self-identified (KRI Breach)',
+                    source_detail: `Measurement on ${measurement_date}: value = ${value}`,
+                    description: `KRI ${kri.kri_uid} (${kri.name}) breached its ${
+                        kri.regulatory_limit != null ? 'regulatory limit' : 'internal tolerance'
+                    } with a value of ${value}`,
+                    owner: kri.owner || null,
+                    priority: 'High',
+                    regulatory_notification_required: kri.threshold_source === 'Regulatory' || kri.threshold_source === 'Both',
+                    department: kri.department || null,
+                    link_kri_ids: [kri.id],
+                    auto: true,
+                });
+            }
+
+            await client.query('COMMIT');
+            res.status(201).json({ measurement_date, value, band, created_issue: createdIssue });
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
+        }
+    })
+);
+
+
+app.get(
+    '/api/users',
+    requireRole('Admin'),
+    asyncHandler(async (req, res) => {
+        const result = await pool.query(
+            `SELECT u.id, u.email, u.full_name, u.is_active, u.must_change_password,
+                    uc.role, uc.functional_role, uc.department
+             FROM user_companies uc JOIN users u ON u.id = uc.user_id
+             WHERE uc.company_id = $1 ORDER BY u.email`,
+            [req.company.id]
+        );
+        res.json(result.rows);
+    })
+);
+
+// Adds a user to the current company. If the email already exists
+// globally (e.g. a group-level user being added to another company),
+// just creates the user_companies link. Otherwise creates a new user
+// with a temporary password that must be changed on first login.
+app.post(
+    '/api/users',
+    requireRole('Admin'),
+    asyncHandler(async (req, res) => {
+        const { email, full_name, role, functional_role, department, temporary_password } = req.body;
+        if (!email) return res.status(400).json({ error: 'Email is required' });
+        if (!['Admin', 'Manager', 'Viewer'].includes(role)) {
+            return res.status(400).json({ error: 'Role must be Admin, Manager, or Viewer' });
+        }
+
+        const normalizedEmail = email.toLowerCase().trim();
+        let userId;
+        let generatedPassword = null;
+
+        const existing = await pool.query('SELECT id FROM users WHERE email = $1', [normalizedEmail]);
+        if (existing.rows.length > 0) {
+            userId = existing.rows[0].id;
+        } else {
+            const tempPassword = temporary_password || crypto.randomBytes(9).toString('base64');
+            const policyIssues = validatePasswordPolicy(tempPassword);
+            if (policyIssues.length > 0) {
+                return res.status(400).json({ error: `Temporary password must ${policyIssues.join(', ')}` });
+            }
+            const hash = await bcrypt.hash(tempPassword, 10);
+            const insertUser = await pool.query(
+                `INSERT INTO users (email, full_name, password_hash, must_change_password)
+                 VALUES ($1, $2, $3, true) RETURNING id`,
+                [normalizedEmail, full_name || '', hash]
+            );
+            userId = insertUser.rows[0].id;
+            await pool.query('INSERT INTO password_history (user_id, password_hash) VALUES ($1, $2)', [userId, hash]);
+            generatedPassword = tempPassword;
+        }
+
+        try {
+            await pool.query(
+                `INSERT INTO user_companies (user_id, company_id, role, functional_role, department)
+                 VALUES ($1, $2, $3, $4, $5)`,
+                [userId, req.company.id, role, functional_role || null, department || null]
+            );
+        } catch (e) {
+            if (e.code === '23505') return res.status(400).json({ error: 'This user already has access to this company' });
+            throw e;
+        }
+
+        await logAudit(null, {
+            companyId: req.company.id,
+            entityType: 'user',
+            entityId: userId,
+            action: 'added_to_company',
+            actor: req.user,
+            details: { email: normalizedEmail, role },
+        });
+
+        res.status(201).json({ id: userId, email: normalizedEmail, role, temporary_password: generatedPassword });
+    })
+);
+
+app.patch(
+    '/api/users/:userId',
+    requireRole('Admin'),
+    asyncHandler(async (req, res) => {
+        const targetId = parseInt(req.params.userId, 10);
+        const { role, functional_role, department } = req.body;
+        if (role && !['Admin', 'Manager', 'Viewer'].includes(role)) {
+            return res.status(400).json({ error: 'Role must be Admin, Manager, or Viewer' });
+        }
+
+        const current = await pool.query('SELECT * FROM user_companies WHERE user_id = $1 AND company_id = $2', [
+            targetId,
+            req.company.id,
+        ]);
+        if (current.rows.length === 0) return res.status(404).json({ error: 'User not found in this company' });
+
+        // Guard: don't allow demoting the last remaining Admin of a company.
+        if (role && role !== 'Admin' && current.rows[0].role === 'Admin') {
+            const adminCount = await pool.query(
+                "SELECT COUNT(*) AS cnt FROM user_companies WHERE company_id = $1 AND role = 'Admin'",
+                [req.company.id]
+            );
+            if (parseInt(adminCount.rows[0].cnt, 10) <= 1) {
+                return res.status(403).json({ error: 'Cannot demote the last Admin of this company' });
+            }
+        }
+
+        const updated = await pool.query(
+            `UPDATE user_companies SET
+                role = COALESCE($1, role),
+                functional_role = COALESCE($2, functional_role),
+                department = COALESCE($3, department)
+             WHERE user_id = $4 AND company_id = $5
+             RETURNING *`,
+            [role, functional_role, department, targetId, req.company.id]
+        );
+
+        await logAudit(null, {
+            companyId: req.company.id,
+            entityType: 'user',
+            entityId: targetId,
+            action: 'role_updated',
+            actor: req.user,
+            details: { role, functional_role, department },
+        });
+
+        res.json(updated.rows[0]);
+    })
+);
+
+// Revokes a user's access to the current company (does not delete the
+// global user record, preserving audit trail integrity per G10).
+app.delete(
+    '/api/users/:userId',
+    requireRole('Admin'),
+    asyncHandler(async (req, res) => {
+        const targetId = parseInt(req.params.userId, 10);
+
+        if (targetId === req.user.id) return res.status(403).json({ error: 'You cannot remove your own access' });
+
+        const current = await pool.query('SELECT * FROM user_companies WHERE user_id = $1 AND company_id = $2', [
+            targetId,
+            req.company.id,
+        ]);
+        if (current.rows.length === 0) return res.status(404).json({ error: 'User not found in this company' });
+
+        if (current.rows[0].role === 'Admin') {
+            const adminCount = await pool.query(
+                "SELECT COUNT(*) AS cnt FROM user_companies WHERE company_id = $1 AND role = 'Admin'",
+                [req.company.id]
+            );
+            if (parseInt(adminCount.rows[0].cnt, 10) <= 1) {
+                return res.status(403).json({ error: 'Cannot remove the last Admin of this company' });
+            }
+        }
+
+        await pool.query('DELETE FROM user_companies WHERE user_id = $1 AND company_id = $2', [targetId, req.company.id]);
+
+        await logAudit(null, {
+            companyId: req.company.id,
+            entityType: 'user',
+            entityId: targetId,
+            action: 'removed_from_company',
+            actor: req.user,
+        });
+
+        res.json({ message: 'Access revoked' });
+    })
+);
+
+// H2: "create/deactivate users" -- a global account-level toggle on
+// users.is_active, which already gates login and session validation
+// (see authenticate middleware). Distinct from DELETE above, which only
+// revokes access to *this* company; deactivation suspends the account
+// everywhere while preserving its history for the audit trail.
+app.post(
+    '/api/users/:userId/active',
+    requireRole('Admin'),
+    asyncHandler(async (req, res) => {
+        const targetId = parseInt(req.params.userId, 10);
+        const { is_active } = req.body;
+        if (typeof is_active !== 'boolean') return res.status(400).json({ error: 'is_active (boolean) is required' });
+
+        if (targetId === req.user.id) return res.status(403).json({ error: 'You cannot deactivate your own account' });
+
+        const current = await pool.query('SELECT * FROM user_companies WHERE user_id = $1 AND company_id = $2', [
+            targetId,
+            req.company.id,
+        ]);
+        if (current.rows.length === 0) return res.status(404).json({ error: 'User not found in this company' });
+
+        if (!is_active && current.rows[0].role === 'Admin') {
+            const adminCount = await pool.query(
+                `SELECT COUNT(*) AS cnt FROM user_companies uc JOIN users u ON u.id = uc.user_id
+                 WHERE uc.company_id = $1 AND uc.role = 'Admin' AND u.is_active = true`,
+                [req.company.id]
+            );
+            if (parseInt(adminCount.rows[0].cnt, 10) <= 1) {
+                return res.status(403).json({ error: 'Cannot deactivate the last active Admin of this company' });
+            }
+        }
+
+        const updated = await pool.query('UPDATE users SET is_active = $1 WHERE id = $2 RETURNING id, email, is_active', [is_active, targetId]);
+        if (updated.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+
+        // Deactivating immediately ends any active sessions for this user.
+        if (!is_active) {
+            await pool.query('DELETE FROM sessions WHERE user_id = $1', [targetId]);
+        }
+
+        await logAudit(null, {
+            companyId: req.company.id,
+            entityType: 'user',
+            entityId: targetId,
+            action: is_active ? 'reactivated' : 'deactivated',
+            actor: req.user,
+        });
+
+        res.json(updated.rows[0]);
+    })
+);
+
+// ============================================================
+// Org Roles -- A2: Role -> Person -> Department mapping, used as a
+// reference when filling in RACI fields on Risks/Controls/Policies.
+// ============================================================
+
+app.get(
+    '/api/org-roles',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const result = await pool.query('SELECT * FROM org_roles WHERE company_id = $1 ORDER BY department, role_title', [req.company.id]);
+        res.json(result.rows);
+    })
+);
+
+app.post(
+    '/api/org-roles',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        if (!req.body.role_title || !req.body.person_name) {
+            return res.status(400).json({ error: 'role_title and person_name are required' });
+        }
+        const result = await pool.query(
+            `INSERT INTO org_roles (company_id, role_title, person_name, department, email) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+            [req.company.id, req.body.role_title, req.body.person_name, req.body.department || null, req.body.email || null]
+        );
+        res.status(201).json(result.rows[0]);
+    })
+);
+
+app.patch(
+    '/api/org-roles/:id',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const fields = ['role_title', 'person_name', 'department', 'email'];
+        const updates = [];
+        const values = [];
+        for (const f of fields) {
+            if (req.body[f] !== undefined) {
+                values.push(req.body[f]);
+                updates.push(`${f} = $${values.length}`);
+            }
+        }
+        if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+
+        values.push(req.params.id, req.company.id);
+        const result = await pool.query(
+            `UPDATE org_roles SET ${updates.join(', ')} WHERE id = $${values.length - 1} AND company_id = $${values.length} RETURNING *`,
+            values
+        );
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+        res.json(result.rows[0]);
+    })
+);
+
+app.delete(
+    '/api/org-roles/:id',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        await pool.query('DELETE FROM org_roles WHERE id = $1 AND company_id = $2', [req.params.id, req.company.id]);
+        res.json({ message: 'Deleted' });
+    })
+);
+
+// ============================================================
+// Policy & Procedure Repository (A1)
+// ============================================================
+
+const POLICY_TRANSITIONS = {
+    Draft: { 'Under Review': ['Admin', 'Manager'] },
+    'Under Review': { Draft: ['Admin', 'Manager'], Approved: ['Admin'] },
+    Approved: { Published: ['Admin'], Draft: ['Admin', 'Manager'] },
+    Published: { Archived: ['Admin'] },
+};
+
+async function attachPolicyMeta(client, policies) {
+    if (policies.length === 0) return policies;
+    const ids = policies.map((p) => p.id);
+    const companyId = policies[0].company_id;
+
+    const [linksRiskRes, linksControlRes, attestRes, usersRes] = await Promise.all([
+        client.query(
+            `SELECT pr.policy_id, r.id, r.risk_uid FROM policy_risks pr JOIN risks r ON r.id = pr.risk_id WHERE pr.policy_id = ANY($1::int[])`,
+            [ids]
+        ),
+        client.query(
+            `SELECT pc.policy_id, cl.id, cl.control_uid, cl.name FROM policy_controls pc JOIN controls_lib cl ON cl.id = pc.control_id WHERE pc.policy_id = ANY($1::int[])`,
+            [ids]
+        ),
+        client.query(`SELECT policy_id, user_email, acknowledged_at FROM policy_attestations WHERE policy_id = ANY($1::int[])`, [ids]),
+        client.query(
+            `SELECT u.email FROM user_companies uc JOIN users u ON u.id = uc.user_id WHERE uc.company_id = $1 AND u.is_active = true`,
+            [companyId]
+        ),
+    ]);
+
+    const risksByPolicy = {};
+    for (const r of linksRiskRes.rows) (risksByPolicy[r.policy_id] = risksByPolicy[r.policy_id] || []).push({ id: r.id, risk_uid: r.risk_uid });
+
+    const controlsByPolicy = {};
+    for (const c of linksControlRes.rows)
+        (controlsByPolicy[c.policy_id] = controlsByPolicy[c.policy_id] || []).push({ id: c.id, control_uid: c.control_uid, name: c.name });
+
+    const attestByPolicy = {};
+    for (const a of attestRes.rows) (attestByPolicy[a.policy_id] = attestByPolicy[a.policy_id] || []).push(a);
+
+    const totalUsers = usersRes.rows.length;
+
+    return policies.map((p) => ({
+        ...p,
+        linked_risks: risksByPolicy[p.id] || [],
+        linked_controls: controlsByPolicy[p.id] || [],
+        attestation_count: (attestByPolicy[p.id] || []).length,
+        total_users: totalUsers,
+    }));
+}
+
+app.get(
+    '/api/policies',
+    asyncHandler(async (req, res) => {
+        // Viewers (E: "published policies + own attestation tasks") see the
+        // latest PUBLISHED version of each policy -- so a policy stays
+        // visible to them even while a newer Draft revision is in progress.
+        // Admin/Manager see the latest version overall (including drafts).
+        const result =
+            req.company.role === 'Viewer'
+                ? await pool.query(
+                      `SELECT p.* FROM policies p
+                       WHERE p.company_id = $1 AND p.status = 'Published'
+                         AND p.version = (SELECT MAX(version) FROM policies p2 WHERE p2.company_id = p.company_id AND p2.policy_uid = p.policy_uid AND p2.status = 'Published')
+                       ORDER BY p.policy_uid`,
+                      [req.company.id]
+                  )
+                : await pool.query(
+                      `SELECT p.* FROM policies p
+                       WHERE p.company_id = $1
+                         AND p.version = (SELECT MAX(version) FROM policies p2 WHERE p2.company_id = p.company_id AND p2.policy_uid = p.policy_uid)
+                       ORDER BY p.policy_uid`,
+                      [req.company.id]
+                  );
+        res.json(await attachPolicyMeta(pool, result.rows));
+    })
+);
+
+app.get(
+    '/api/policies/:uid/history',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const result = await pool.query('SELECT * FROM policies WHERE company_id = $1 AND policy_uid = $2 ORDER BY version DESC', [
+            req.company.id,
+            req.params.uid,
+        ]);
+        res.json(result.rows);
+    })
+);
+
+app.post(
+    '/api/policies',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        if (!req.body.name) return res.status(400).json({ error: 'Policy name is required' });
+
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            const uid = await generateUniqueUid(client, req.company.id, 'policies', 'policy_uid', 'POL');
+            const insertRes = await client.query(
+                `INSERT INTO policies (company_id, policy_uid, version, name, category, description, content_owner, approver,
+                                        review_frequency, next_review_date, created_by)
+                 VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+                [
+                    req.company.id,
+                    uid,
+                    req.body.name,
+                    req.body.category || 'Governance',
+                    req.body.description || null,
+                    req.body.content_owner || null,
+                    req.body.approver || null,
+                    req.body.review_frequency || 'Annual',
+                    req.body.next_review_date || null,
+                    req.user.email,
+                ]
+            );
+            const policy = insertRes.rows[0];
+
+            for (const riskId of req.body.link_risk_ids || []) {
+                await client.query('INSERT INTO policy_risks (policy_id, risk_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [policy.id, riskId]);
+            }
+            for (const controlId of req.body.link_control_ids || []) {
+                await client.query('INSERT INTO policy_controls (policy_id, control_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [
+                    policy.id,
+                    controlId,
+                ]);
+            }
+
+            await logAudit(client, {
+                companyId: req.company.id,
+                entityType: 'policy',
+                entityId: policy.id,
+                action: 'create',
+                actor: req.user,
+                details: { policy_uid: uid, name: policy.name },
+            });
+
+            await client.query('COMMIT');
+            const [enriched] = await attachPolicyMeta(pool, [policy]);
+            res.status(201).json(enriched);
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
+        }
+    })
+);
+
+// Edits are only permitted while a policy is in Draft -- once it enters
+// review/approval, changes require a new version (see /new-version below).
+app.patch(
+    '/api/policies/:id',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const current = await pool.query('SELECT * FROM policies WHERE id = $1 AND company_id = $2', [req.params.id, req.company.id]);
+        if (current.rows.length === 0) return res.status(404).json({ error: 'Policy not found' });
+        if (current.rows[0].status !== 'Draft') {
+            return res.status(400).json({ error: 'Only Draft policies can be edited directly. Create a new version instead.' });
+        }
+
+        const fields = ['name', 'category', 'description', 'content_owner', 'approver', 'review_frequency', 'next_review_date'];
+        const updates = [];
+        const values = [];
+        for (const f of fields) {
+            if (req.body[f] !== undefined) {
+                values.push(req.body[f]);
+                updates.push(`${f} = $${values.length}`);
+            }
+        }
+
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+
+            let updated = current.rows[0];
+            if (updates.length > 0) {
+                values.push(req.params.id);
+                const result = await client.query(`UPDATE policies SET ${updates.join(', ')} WHERE id = $${values.length} RETURNING *`, values);
+                updated = result.rows[0];
+            }
+
+            if (req.body.link_risk_ids) {
+                await client.query('DELETE FROM policy_risks WHERE policy_id = $1', [req.params.id]);
+                for (const riskId of req.body.link_risk_ids) {
+                    await client.query('INSERT INTO policy_risks (policy_id, risk_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [
+                        req.params.id,
+                        riskId,
+                    ]);
+                }
+            }
+            if (req.body.link_control_ids) {
+                await client.query('DELETE FROM policy_controls WHERE policy_id = $1', [req.params.id]);
+                for (const controlId of req.body.link_control_ids) {
+                    await client.query('INSERT INTO policy_controls (policy_id, control_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [
+                        req.params.id,
+                        controlId,
+                    ]);
+                }
+            }
+
+            await logAudit(client, {
+                companyId: req.company.id,
+                entityType: 'policy',
+                entityId: updated.id,
+                action: 'update',
+                actor: req.user,
+                details: req.body,
+            });
+
+            await client.query('COMMIT');
+            const [enriched] = await attachPolicyMeta(pool, [updated]);
+            res.json(enriched);
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
+        }
+    })
+);
+
+// Workflow: Draft -> Under Review -> Approved -> Published -> Archived
+// (with Under Review/Approved able to bounce back to Draft for rework).
+// Approve and Publish require Admin (the "Approver" role in our 3-role model).
+app.post(
+    '/api/policies/:id/transition',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const targetStatus = req.body.status;
+        const current = await pool.query('SELECT * FROM policies WHERE id = $1 AND company_id = $2', [req.params.id, req.company.id]);
+        if (current.rows.length === 0) return res.status(404).json({ error: 'Policy not found' });
+        const policy = current.rows[0];
+
+        const allowed = POLICY_TRANSITIONS[policy.status] || {};
+        const allowedRoles = allowed[targetStatus];
+        if (!allowedRoles) {
+            return res.status(400).json({ error: `Cannot transition from ${policy.status} to ${targetStatus}` });
+        }
+        if (!allowedRoles.includes(req.company.role)) {
+            return res.status(403).json({ error: `Only ${allowedRoles.join('/')} can move a policy from ${policy.status} to ${targetStatus}` });
+        }
+
+        const setEffectiveDate = targetStatus === 'Published' && !policy.effective_date;
+        const result = await pool.query(
+            setEffectiveDate
+                ? `UPDATE policies SET status = $1, effective_date = CURRENT_DATE WHERE id = $2 RETURNING *`
+                : `UPDATE policies SET status = $1 WHERE id = $2 RETURNING *`,
+            [targetStatus, req.params.id]
+        );
+
+        await logAudit(null, {
+            companyId: req.company.id,
+            entityType: 'policy',
+            entityId: policy.id,
+            action: 'transition',
+            actor: req.user,
+            details: { from: policy.status, to: targetStatus },
+        });
+
+        const [enriched] = await attachPolicyMeta(pool, result.rows);
+        res.json(enriched);
+    })
+);
+
+// Creates a new Draft revision of a Published/Archived policy, carrying
+// forward its fields and links. The prior version remains in history.
+app.post(
+    '/api/policies/:id/new-version',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+
+            const current = await client.query('SELECT * FROM policies WHERE id = $1 AND company_id = $2', [req.params.id, req.company.id]);
+            if (current.rows.length === 0) {
+                await client.query('ROLLBACK');
+                return res.status(404).json({ error: 'Policy not found' });
+            }
+            const source = current.rows[0];
+            if (!['Published', 'Archived'].includes(source.status)) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ error: 'A new version can only be created from a Published or Archived policy' });
+            }
+
+            const insertRes = await client.query(
+                `INSERT INTO policies (company_id, policy_uid, version, name, category, description, content_owner, approver,
+                                        review_frequency, next_review_date, created_by, status)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'Draft') RETURNING *`,
+                [
+                    source.company_id,
+                    source.policy_uid,
+                    source.version + 1,
+                    source.name,
+                    source.category,
+                    source.description,
+                    source.content_owner,
+                    source.approver,
+                    source.review_frequency,
+                    null, // next_review_date is re-set when the revision is published
+                    req.user.email,
+                ]
+            );
+            const newVersion = insertRes.rows[0];
+
+            await client.query(
+                `INSERT INTO policy_risks (policy_id, risk_id) SELECT $1, risk_id FROM policy_risks WHERE policy_id = $2`,
+                [newVersion.id, source.id]
+            );
+            await client.query(
+                `INSERT INTO policy_controls (policy_id, control_id) SELECT $1, control_id FROM policy_controls WHERE policy_id = $2`,
+                [newVersion.id, source.id]
+            );
+
+            await logAudit(client, {
+                companyId: req.company.id,
+                entityType: 'policy',
+                entityId: newVersion.id,
+                action: 'new_version',
+                actor: req.user,
+                details: { policy_uid: source.policy_uid, version: newVersion.version, supersedes: source.id },
+            });
+
+            await client.query('COMMIT');
+            const [enriched] = await attachPolicyMeta(pool, [newVersion]);
+            res.status(201).json(enriched);
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
+        }
+    })
+);
+
+// Attestation (A1: "who has read & accepted, with timestamps"). Any
+// authenticated company member can attest to a Published policy --
+// including Viewers, for whom this is part of "own attestation tasks" (E).
+app.post(
+    '/api/policies/:id/attest',
+    asyncHandler(async (req, res) => {
+        const policyRes = await pool.query('SELECT * FROM policies WHERE id = $1 AND company_id = $2', [req.params.id, req.company.id]);
+        if (policyRes.rows.length === 0) return res.status(404).json({ error: 'Policy not found' });
+        if (policyRes.rows[0].status !== 'Published') {
+            return res.status(400).json({ error: 'Only Published policies can be attested to' });
+        }
+
+        const result = await pool.query(
+            `INSERT INTO policy_attestations (policy_id, user_email) VALUES ($1, $2)
+             ON CONFLICT (policy_id, user_email) DO UPDATE SET acknowledged_at = now() RETURNING *`,
+            [req.params.id, req.user.email]
+        );
+
+        await logAudit(null, {
+            companyId: req.company.id,
+            entityType: 'policy',
+            entityId: policyRes.rows[0].id,
+            action: 'attest',
+            actor: req.user,
+        });
+
+        res.status(201).json(result.rows[0]);
+    })
+);
+
+app.get(
+    '/api/policies/:id/attestations',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const policyRes = await pool.query('SELECT * FROM policies WHERE id = $1 AND company_id = $2', [req.params.id, req.company.id]);
+        if (policyRes.rows.length === 0) return res.status(404).json({ error: 'Policy not found' });
+
+        const [attested, allUsers] = await Promise.all([
+            pool.query('SELECT user_email, acknowledged_at FROM policy_attestations WHERE policy_id = $1 ORDER BY acknowledged_at', [req.params.id]),
+            pool.query(
+                `SELECT u.email FROM user_companies uc JOIN users u ON u.id = uc.user_id WHERE uc.company_id = $1 AND u.is_active = true ORDER BY u.email`,
+                [req.company.id]
+            ),
+        ]);
+
+        const attestedEmails = new Set(attested.rows.map((a) => a.user_email));
+        res.json({
+            attested: attested.rows,
+            outstanding: allUsers.rows.map((u) => u.email).filter((e) => !attestedEmails.has(e)),
+        });
+    })
+);
+
+// ============================================================
+// Compliance Obligations Register (C1)
+// ============================================================
+
+async function attachObligationLinks(client, obligations) {
+    if (obligations.length === 0) return obligations;
+    const ids = obligations.map((o) => o.id);
+
+    const [policiesRes, controlsRes, krisRes, risksRes, historyRes, issuesRes] = await Promise.all([
+        client.query(
+            `SELECT op.obligation_id, p.id, p.policy_uid, p.name FROM obligation_policies op
+             JOIN policies p ON p.id = op.policy_id WHERE op.obligation_id = ANY($1::int[])`,
+            [ids]
+        ),
+        client.query(
+            `SELECT oc.obligation_id, cl.id, cl.control_uid, cl.name FROM obligation_controls oc
+             JOIN controls_lib cl ON cl.id = oc.control_id WHERE oc.obligation_id = ANY($1::int[])`,
+            [ids]
+        ),
+        client.query(
+            `SELECT ok.obligation_id, k.id, k.kri_uid, k.name FROM obligation_kris ok
+             JOIN kris k ON k.id = ok.kri_id WHERE ok.obligation_id = ANY($1::int[])`,
+            [ids]
+        ),
+        client.query(
+            `SELECT orr.obligation_id, r.id, r.risk_uid FROM obligation_risks orr
+             JOIN risks r ON r.id = orr.risk_id WHERE orr.obligation_id = ANY($1::int[])`,
+            [ids]
+        ),
+        client.query(
+            `SELECT * FROM (
+                SELECT obligation_id, status, changed_at,
+                       ROW_NUMBER() OVER (PARTITION BY obligation_id ORDER BY changed_at DESC, id DESC) AS rn
+                FROM obligation_status_history WHERE obligation_id = ANY($1::int[])
+             ) sub WHERE rn = 1`,
+            [ids]
+        ),
+        client.query(
+            `SELECT io.obligation_id, COUNT(*) AS cnt FROM issue_obligations io
+             JOIN issues i ON i.id = io.issue_id
+             WHERE io.obligation_id = ANY($1::int[]) AND i.status = ANY($2::text[])
+             GROUP BY io.obligation_id`,
+            [ids, OPEN_ISSUE_STATUSES]
+        ),
+    ]);
+
+    const group = (rows, mapper) => {
+        const byId = {};
+        for (const row of rows) (byId[row.obligation_id] = byId[row.obligation_id] || []).push(mapper(row));
+        return byId;
+    };
+
+    const policiesByObl = group(policiesRes.rows, (p) => ({ id: p.id, policy_uid: p.policy_uid, name: p.name }));
+    const controlsByObl = group(controlsRes.rows, (c) => ({ id: c.id, control_uid: c.control_uid, name: c.name }));
+    const krisByObl = group(krisRes.rows, (k) => ({ id: k.id, kri_uid: k.kri_uid, name: k.name }));
+    const risksByObl = group(risksRes.rows, (r) => ({ id: r.id, risk_uid: r.risk_uid }));
+
+    const lastStatusChangeByObl = {};
+    for (const h of historyRes.rows) lastStatusChangeByObl[h.obligation_id] = h.changed_at;
+
+    const openIssuesByObl = {};
+    for (const row of issuesRes.rows) openIssuesByObl[row.obligation_id] = parseInt(row.cnt, 10);
+
+    return obligations.map((o) => ({
+        ...o,
+        linked_policies: policiesByObl[o.id] || [],
+        linked_controls: controlsByObl[o.id] || [],
+        linked_kris: krisByObl[o.id] || [],
+        linked_risks: risksByObl[o.id] || [],
+        status_last_changed: lastStatusChangeByObl[o.id] || null,
+        open_issues_count: openIssuesByObl[o.id] || 0,
+    }));
+}
+
+async function linkObligation(client, obligationId, body) {
+    for (const policyId of body.link_policy_ids || []) {
+        await client.query('INSERT INTO obligation_policies (obligation_id, policy_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [
+            obligationId,
+            policyId,
+        ]);
+    }
+    for (const controlId of body.link_control_ids || []) {
+        await client.query('INSERT INTO obligation_controls (obligation_id, control_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [
+            obligationId,
+            controlId,
+        ]);
+    }
+    for (const kriId of body.link_kri_ids || []) {
+        await client.query('INSERT INTO obligation_kris (obligation_id, kri_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [obligationId, kriId]);
+    }
+    for (const riskId of body.link_risk_ids || []) {
+        await client.query('INSERT INTO obligation_risks (obligation_id, risk_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [obligationId, riskId]);
+    }
+}
+
+app.get(
+    '/api/obligations',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const scope = managerScopeClause(req, 'applicable_to', 2);
+        const result = await pool.query(
+            `SELECT * FROM compliance_obligations WHERE company_id = $1 ${scope ? `AND ${scope.clause}` : ''} ORDER BY obligation_uid`,
+            scope ? [req.company.id, scope.value] : [req.company.id]
+        );
+        res.json(await attachObligationLinks(pool, result.rows));
+    })
+);
+
+app.post(
+    '/api/obligations',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        if (!req.body.regulation_name) return res.status(400).json({ error: 'Regulation/Framework name is required' });
+
+        const deptResult = resolveDepartmentForWrite(req, req.body.applicable_to);
+        if (deptResult.error) return res.status(400).json({ error: deptResult.error });
+
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            const uid = await generateUniqueUid(client, req.company.id, 'compliance_obligations', 'obligation_uid', 'OBL');
+
+            const insertRes = await client.query(
+                `INSERT INTO compliance_obligations (
+                    company_id, obligation_uid, regulatory_body, regulation_name, reference, description, applicable_to,
+                    compliance_status, obligation_owner, evidence_of_compliance, reporting_requirement, next_reporting_date,
+                    last_reviewed_date, next_review_date, created_by
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+                [
+                    req.company.id,
+                    uid,
+                    req.body.regulatory_body || null,
+                    req.body.regulation_name,
+                    req.body.reference || null,
+                    req.body.description || null,
+                    deptResult.department || null,
+                    req.body.compliance_status || 'Not Yet Assessed',
+                    req.body.obligation_owner || null,
+                    req.body.evidence_of_compliance || null,
+                    req.body.reporting_requirement || null,
+                    req.body.next_reporting_date || null,
+                    req.body.last_reviewed_date || null,
+                    req.body.next_review_date || null,
+                    req.user.email,
+                ]
+            );
+            const obligation = insertRes.rows[0];
+
+            await linkObligation(client, obligation.id, req.body);
+
+            // Seed the status history so "last changed" is meaningful from creation.
+            await client.query('INSERT INTO obligation_status_history (obligation_id, status, notes, changed_by) VALUES ($1,$2,$3,$4)', [
+                obligation.id,
+                obligation.compliance_status,
+                'Initial assessment on creation',
+                req.user.email,
+            ]);
+
+            await logAudit(client, {
+                companyId: req.company.id,
+                entityType: 'obligation',
+                entityId: obligation.id,
+                action: 'create',
+                actor: req.user,
+                details: { obligation_uid: uid, regulation_name: obligation.regulation_name },
+            });
+
+            await client.query('COMMIT');
+            const [enriched] = await attachObligationLinks(pool, [obligation]);
+            res.status(201).json(enriched);
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
+        }
+    })
+);
+
+app.patch(
+    '/api/obligations/:id',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const fields = [
+            'regulatory_body',
+            'regulation_name',
+            'reference',
+            'description',
+            'obligation_owner',
+            'evidence_of_compliance',
+            'reporting_requirement',
+            'next_reporting_date',
+            'last_reviewed_date',
+            'next_review_date',
+        ];
+        const updates = [];
+        const values = [];
+        for (const f of fields) {
+            if (req.body[f] !== undefined) {
+                values.push(req.body[f]);
+                updates.push(`${f} = $${values.length}`);
+            }
+        }
+
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+
+            const current = await client.query('SELECT * FROM compliance_obligations WHERE id = $1 AND company_id = $2', [
+                req.params.id,
+                req.company.id,
+            ]);
+            if (current.rows.length === 0) {
+                await client.query('ROLLBACK');
+                return res.status(404).json({ error: 'Obligation not found' });
+            }
+            if (!managerCanAccess(req, current.rows[0].applicable_to)) {
+                await client.query('ROLLBACK');
+                return res.status(403).json({ error: 'This obligation belongs to a different department.' });
+            }
+
+            if (req.body.applicable_to !== undefined) {
+                const deptResult = resolveDepartmentForWrite(req, req.body.applicable_to);
+                if (deptResult.error) {
+                    await client.query('ROLLBACK');
+                    return res.status(400).json({ error: deptResult.error });
+                }
+                values.push(deptResult.department);
+                updates.push(`applicable_to = $${values.length}`);
+            }
+
+            let updated = current.rows[0];
+            if (updates.length > 0) {
+                values.push(req.params.id);
+                const result = await client.query(
+                    `UPDATE compliance_obligations SET ${updates.join(', ')} WHERE id = $${values.length} RETURNING *`,
+                    values
+                );
+                updated = result.rows[0];
+            }
+
+            // Relinking replaces the full set for whichever link arrays were provided.
+            if (req.body.link_policy_ids) await client.query('DELETE FROM obligation_policies WHERE obligation_id = $1', [req.params.id]);
+            if (req.body.link_control_ids) await client.query('DELETE FROM obligation_controls WHERE obligation_id = $1', [req.params.id]);
+            if (req.body.link_kri_ids) await client.query('DELETE FROM obligation_kris WHERE obligation_id = $1', [req.params.id]);
+            if (req.body.link_risk_ids) await client.query('DELETE FROM obligation_risks WHERE obligation_id = $1', [req.params.id]);
+            await linkObligation(client, req.params.id, req.body);
+
+            await logAudit(client, {
+                companyId: req.company.id,
+                entityType: 'obligation',
+                entityId: updated.id,
+                action: 'update',
+                actor: req.user,
+                details: req.body,
+            });
+
+            await client.query('COMMIT');
+            const [enriched] = await attachObligationLinks(pool, [updated]);
+            res.json(enriched);
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
+        }
+    })
+);
+
+// Compliance status changes are recorded as their own history entries
+// (G10 audit trail) -- this is exactly what auditors ask "show me how
+// and when this assessment changed" about.
+app.post(
+    '/api/obligations/:id/status',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const { status, notes } = req.body;
+        if (!['Compliant', 'Partially Compliant', 'Non-Compliant', 'Not Yet Assessed'].includes(status)) {
+            return res.status(400).json({ error: 'status must be Compliant, Partially Compliant, Non-Compliant, or Not Yet Assessed' });
+        }
+
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+
+            const existing = await client.query('SELECT * FROM compliance_obligations WHERE id = $1 AND company_id = $2', [
+                req.params.id,
+                req.company.id,
+            ]);
+            if (existing.rows.length === 0) {
+                await client.query('ROLLBACK');
+                return res.status(404).json({ error: 'Obligation not found' });
+            }
+            if (!managerCanAccess(req, existing.rows[0].applicable_to)) {
+                await client.query('ROLLBACK');
+                return res.status(403).json({ error: 'This obligation belongs to a different department.' });
+            }
+
+            const result = await client.query(
+                `UPDATE compliance_obligations SET compliance_status = $1, last_reviewed_date = CURRENT_DATE
+                 WHERE id = $2 AND company_id = $3 RETURNING *`,
+                [status, req.params.id, req.company.id]
+            );
+
+            await client.query('INSERT INTO obligation_status_history (obligation_id, status, notes, changed_by) VALUES ($1,$2,$3,$4)', [
+                req.params.id,
+                status,
+                notes || null,
+                req.user.email,
+            ]);
+
+            await logAudit(client, {
+                companyId: req.company.id,
+                entityType: 'obligation',
+                entityId: result.rows[0].id,
+                action: 'status_change',
+                actor: req.user,
+                details: { status, notes },
+            });
+
+            // D: a Non-Compliant assessment logs a Management Review issue
+            // automatically, flagged for regulatory notification review.
+            let createdIssue = null;
+            if (status === 'Non-Compliant') {
+                const obligation = result.rows[0];
+                createdIssue = await createIssue(client, req.company.id, req.user.email, {
+                    source_type: 'Self-identified (Management Review)',
+                    source_detail: notes || `Compliance status set to Non-Compliant`,
+                    description: `Obligation ${obligation.obligation_uid} (${obligation.regulation_name}) assessed Non-Compliant`,
+                    owner: obligation.obligation_owner || null,
+                    priority: 'High',
+                    regulatory_notification_required: true,
+                    regulatory_notification_deadline: obligation.next_reporting_date || null,
+                    department: obligation.applicable_to || null,
+                    link_obligation_ids: [obligation.id],
+                    auto: true,
+                });
+            }
+
+            await client.query('COMMIT');
+            const [enriched] = await attachObligationLinks(pool, result.rows);
+            res.json({ ...enriched, created_issue: createdIssue });
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
+        }
+    })
+);
+
+app.get(
+    '/api/obligations/:id/history',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const result = await pool.query(
+            `SELECT h.* FROM obligation_status_history h
+             JOIN compliance_obligations o ON o.id = h.obligation_id
+             WHERE h.obligation_id = $1 AND o.company_id = $2 ORDER BY h.changed_at DESC`,
+            [req.params.id, req.company.id]
+        );
+        res.json(result.rows);
+    })
+);
+
+
+app.get(
+    '/api/audit-log',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const { entity_type, entity_id } = req.query;
+        const conditions = ['company_id = $1'];
+        const params = [req.company.id];
+
+        if (entity_type) {
+            params.push(entity_type);
+            conditions.push(`entity_type = $${params.length}`);
+        }
+        if (entity_id) {
+            params.push(parseInt(entity_id, 10));
+            conditions.push(`entity_id = $${params.length}`);
+        }
+
+        const result = await pool.query(
+            `SELECT * FROM audit_log WHERE ${conditions.join(' AND ')} ORDER BY changed_at DESC LIMIT 200`,
+            params
+        );
+        res.json(result.rows);
+    })
+);
+
+// ============================================================
+// Issues & Actions Tracker (D)
+// ============================================================
+
+const OPEN_ISSUE_STATUSES = ['Open', 'In Progress'];
+
+// Creates an issue and links it to whichever entities triggered it.
+// Shared by the manual POST /api/issues endpoint and the automatic
+// hooks below (control test failures, KRI breaches, non-compliance).
+async function createIssue(client, companyId, actorEmail, fields) {
+    const uid = await generateUniqueUid(client, companyId, 'issues', 'issue_uid', 'ISS');
+    const insertRes = await client.query(
+        `INSERT INTO issues (
+            company_id, issue_uid, source_type, source_detail, description, root_cause, remediation_plan,
+            owner, due_date, priority, regulatory_notification_required, regulatory_notification_deadline, created_by, department
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+        [
+            companyId,
+            uid,
+            fields.source_type,
+            fields.source_detail || null,
+            fields.description,
+            fields.root_cause || null,
+            fields.remediation_plan || null,
+            fields.owner || null,
+            fields.due_date || null,
+            fields.priority || 'Medium',
+            fields.regulatory_notification_required || false,
+            fields.regulatory_notification_deadline || null,
+            actorEmail,
+            fields.department || null,
+        ]
+    );
+    const issue = insertRes.rows[0];
+
+    for (const controlId of fields.link_control_ids || []) {
+        await client.query('INSERT INTO issue_controls (issue_id, control_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [issue.id, controlId]);
+    }
+    for (const riskId of fields.link_risk_ids || []) {
+        await client.query('INSERT INTO issue_risks (issue_id, risk_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [issue.id, riskId]);
+    }
+    for (const obligationId of fields.link_obligation_ids || []) {
+        await client.query('INSERT INTO issue_obligations (issue_id, obligation_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [issue.id, obligationId]);
+    }
+    for (const kriId of fields.link_kri_ids || []) {
+        await client.query('INSERT INTO issue_kris (issue_id, kri_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [issue.id, kriId]);
+    }
+
+    await logAudit(client, {
+        companyId,
+        entityType: 'issue',
+        entityId: issue.id,
+        action: 'create',
+        actor: { email: actorEmail },
+        details: { issue_uid: uid, source_type: fields.source_type, auto: fields.auto || false },
+    });
+
+    return issue;
+}
+
+async function attachIssueLinks(client, issues) {
+    if (issues.length === 0) return issues;
+    const ids = issues.map((i) => i.id);
+
+    const [controlsRes, risksRes, obligationsRes, krisRes] = await Promise.all([
+        client.query(
+            `SELECT ic.issue_id, cl.id, cl.control_uid, cl.name FROM issue_controls ic
+             JOIN controls_lib cl ON cl.id = ic.control_id WHERE ic.issue_id = ANY($1::int[])`,
+            [ids]
+        ),
+        client.query(
+            `SELECT ir.issue_id, r.id, r.risk_uid FROM issue_risks ir
+             JOIN risks r ON r.id = ir.risk_id WHERE ir.issue_id = ANY($1::int[])`,
+            [ids]
+        ),
+        client.query(
+            `SELECT io.issue_id, o.id, o.obligation_uid, o.regulation_name FROM issue_obligations io
+             JOIN compliance_obligations o ON o.id = io.obligation_id WHERE io.issue_id = ANY($1::int[])`,
+            [ids]
+        ),
+        client.query(
+            `SELECT ik.issue_id, k.id, k.kri_uid, k.name FROM issue_kris ik
+             JOIN kris k ON k.id = ik.kri_id WHERE ik.issue_id = ANY($1::int[])`,
+            [ids]
+        ),
+    ]);
+
+    const group = (rows, mapper) => {
+        const byId = {};
+        for (const row of rows) (byId[row.issue_id] = byId[row.issue_id] || []).push(mapper(row));
+        return byId;
+    };
+
+    const controlsByIssue = group(controlsRes.rows, (c) => ({ id: c.id, control_uid: c.control_uid, name: c.name }));
+    const risksByIssue = group(risksRes.rows, (r) => ({ id: r.id, risk_uid: r.risk_uid }));
+    const obligationsByIssue = group(obligationsRes.rows, (o) => ({ id: o.id, obligation_uid: o.obligation_uid, regulation_name: o.regulation_name }));
+    const krisByIssue = group(krisRes.rows, (k) => ({ id: k.id, kri_uid: k.kri_uid, name: k.name }));
+
+    return issues.map((i) => ({
+        ...i,
+        linked_controls: controlsByIssue[i.id] || [],
+        linked_risks: risksByIssue[i.id] || [],
+        linked_obligations: obligationsByIssue[i.id] || [],
+        linked_kris: krisByIssue[i.id] || [],
+    }));
+}
+
+app.get(
+    '/api/issues',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const scope = managerScopeClause(req, 'department', 2);
+        const result = await pool.query(
+            `SELECT * FROM issues WHERE company_id = $1 ${scope ? `AND ${scope.clause}` : ''} ORDER BY issue_uid`,
+            scope ? [req.company.id, scope.value] : [req.company.id]
+        );
+        res.json(await attachIssueLinks(pool, result.rows));
+    })
+);
+
+app.post(
+    '/api/issues',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        if (!req.body.source_type || !req.body.description) {
+            return res.status(400).json({ error: 'source_type and description are required' });
+        }
+
+        const deptResult = resolveDepartmentForWrite(req, req.body.department);
+        if (deptResult.error) return res.status(400).json({ error: deptResult.error });
+
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            const issue = await createIssue(client, req.company.id, req.user.email, { ...req.body, department: deptResult.department });
+            await client.query('COMMIT');
+            const [enriched] = await attachIssueLinks(pool, [issue]);
+            res.status(201).json(enriched);
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
+        }
+    })
+);
+
+app.patch(
+    '/api/issues/:id',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const fields = ['source_type', 'source_detail', 'description', 'root_cause', 'remediation_plan', 'owner', 'due_date', 'priority'];
+        const updates = [];
+        const values = [];
+        for (const f of fields) {
+            if (req.body[f] !== undefined) {
+                values.push(req.body[f]);
+                updates.push(`${f} = $${values.length}`);
+            }
+        }
+
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+
+            const current = await client.query('SELECT * FROM issues WHERE id = $1 AND company_id = $2', [req.params.id, req.company.id]);
+            if (current.rows.length === 0) {
+                await client.query('ROLLBACK');
+                return res.status(404).json({ error: 'Issue not found' });
+            }
+            if (!managerCanAccess(req, current.rows[0].department)) {
+                await client.query('ROLLBACK');
+                return res.status(403).json({ error: 'This issue belongs to a different department.' });
+            }
+
+            if (req.body.department !== undefined) {
+                const deptResult = resolveDepartmentForWrite(req, req.body.department);
+                if (deptResult.error) {
+                    await client.query('ROLLBACK');
+                    return res.status(400).json({ error: deptResult.error });
+                }
+                values.push(deptResult.department);
+                updates.push(`department = $${values.length}`);
+            }
+
+            let updated = current.rows[0];
+            if (updates.length > 0) {
+                values.push(req.params.id);
+                const result = await client.query(`UPDATE issues SET ${updates.join(', ')} WHERE id = $${values.length} RETURNING *`, values);
+                updated = result.rows[0];
+            }
+
+            if (req.body.link_control_ids) {
+                await client.query('DELETE FROM issue_controls WHERE issue_id = $1', [req.params.id]);
+                for (const id of req.body.link_control_ids) {
+                    await client.query('INSERT INTO issue_controls (issue_id, control_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.params.id, id]);
+                }
+            }
+            if (req.body.link_risk_ids) {
+                await client.query('DELETE FROM issue_risks WHERE issue_id = $1', [req.params.id]);
+                for (const id of req.body.link_risk_ids) {
+                    await client.query('INSERT INTO issue_risks (issue_id, risk_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.params.id, id]);
+                }
+            }
+            if (req.body.link_obligation_ids) {
+                await client.query('DELETE FROM issue_obligations WHERE issue_id = $1', [req.params.id]);
+                for (const id of req.body.link_obligation_ids) {
+                    await client.query('INSERT INTO issue_obligations (issue_id, obligation_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.params.id, id]);
+                }
+            }
+            if (req.body.link_kri_ids) {
+                await client.query('DELETE FROM issue_kris WHERE issue_id = $1', [req.params.id]);
+                for (const id of req.body.link_kri_ids) {
+                    await client.query('INSERT INTO issue_kris (issue_id, kri_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.params.id, id]);
+                }
+            }
+
+            await logAudit(client, {
+                companyId: req.company.id,
+                entityType: 'issue',
+                entityId: updated.id,
+                action: 'update',
+                actor: req.user,
+                details: req.body,
+            });
+
+            await client.query('COMMIT');
+            const [enriched] = await attachIssueLinks(pool, [updated]);
+            res.json(enriched);
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
+        }
+    })
+);
+
+// Status transitions enforce the two governance safeguards from D:
+//  - "Risk Accepted" requires a documented rationale and sign-off from
+//    an Admin (higher authority) other than the issue owner.
+//  - "Closed-Remediated" requires verification by someone other than
+//    the issue owner (separation of duties).
+app.post(
+    '/api/issues/:id/status',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const { status } = req.body;
+        const validStatuses = ['Open', 'In Progress', 'Closed-Remediated', 'Risk Accepted', 'Deferred', 'No Longer Relevant'];
+        if (!validStatuses.includes(status)) {
+            return res.status(400).json({ error: `status must be one of: ${validStatuses.join(', ')}` });
+        }
+
+        const current = await pool.query('SELECT * FROM issues WHERE id = $1 AND company_id = $2', [req.params.id, req.company.id]);
+        if (current.rows.length === 0) return res.status(404).json({ error: 'Issue not found' });
+        const issue = current.rows[0];
+        if (!managerCanAccess(req, issue.department)) {
+            return res.status(403).json({ error: 'This issue belongs to a different department.' });
+        }
+
+        const updates = ['status = $1'];
+        const values = [status];
+
+        if (status === 'Risk Accepted') {
+            const { disposition_rationale, accepted_approved_by, accepted_review_date } = req.body;
+            if (!disposition_rationale || !accepted_approved_by || !accepted_review_date) {
+                return res.status(400).json({
+                    error: '"Risk Accepted" requires disposition_rationale, accepted_approved_by, and accepted_review_date.',
+                });
+            }
+            if (issue.owner && accepted_approved_by.toLowerCase() === issue.owner.toLowerCase()) {
+                return res.status(400).json({ error: 'Approved By must be someone other than the issue owner.' });
+            }
+            const approverRes = await pool.query(
+                `SELECT uc.role FROM user_companies uc JOIN users u ON u.id = uc.user_id
+                 WHERE uc.company_id = $1 AND u.email = $2`,
+                [req.company.id, accepted_approved_by.toLowerCase()]
+            );
+            if (approverRes.rows.length === 0 || approverRes.rows[0].role !== 'Admin') {
+                return res.status(400).json({ error: 'Approved By must be an Admin (higher authority than the issue owner).' });
+            }
+
+            values.push(disposition_rationale, accepted_approved_by, accepted_review_date);
+            updates.push(`disposition_rationale = $${values.length - 2}`, `accepted_approved_by = $${values.length - 1}`, `accepted_review_date = $${values.length}`);
+        }
+
+        if (status === 'Closed-Remediated') {
+            const { closure_verified_by } = req.body;
+            if (!closure_verified_by) {
+                return res.status(400).json({ error: '"Closed-Remediated" requires closure_verified_by (separation of duties).' });
+            }
+            if (issue.owner && closure_verified_by.toLowerCase() === issue.owner.toLowerCase()) {
+                return res.status(400).json({ error: 'Closure must be verified by someone other than the issue owner.' });
+            }
+            values.push(closure_verified_by);
+            updates.push(`closure_verified_by = $${values.length}`, `closed_at = now()`);
+        }
+
+        values.push(req.params.id);
+        const result = await pool.query(`UPDATE issues SET ${updates.join(', ')} WHERE id = $${values.length} RETURNING *`, values);
+
+        await logAudit(null, {
+            companyId: req.company.id,
+            entityType: 'issue',
+            entityId: issue.id,
+            action: 'status_change',
+            actor: req.user,
+            details: { from: issue.status, to: status },
+        });
+
+        const [enriched] = await attachIssueLinks(pool, result.rows);
+        res.json(enriched);
+    })
+);
+
+// ============================================================
+// Dashboards (F)
+// ============================================================
+
+// How long after a test before the next one is "due", per testing
+// frequency (B2). Used by F2 "control tests due/overdue".
+const TESTING_FREQUENCY_MONTHS = { Monthly: 1, Quarterly: 3, Annual: 12 };
+
+function addMonths(date, months) {
+    const d = new Date(date);
+    d.setMonth(d.getMonth() + months);
+    return d;
+}
+
+function daysBetween(a, b) {
+    return Math.round((a.getTime() - b.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+// F1: Management Summary (Executive + Compliance Coordinator combined view).
+// Scoped to the Manager's department like every other module (E); Admins
+// see the whole company.
+app.get(
+    '/api/dashboard/management-summary',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const riskScope = managerScopeClause(req, 'department', 2);
+        const obligationScope = managerScopeClause(req, 'applicable_to', 2);
+        const issueScope = managerScopeClause(req, 'department', 2);
+        const kriScope = managerScopeClause(req, 'department', 2);
+
+        const latestRisksQuery = `
+            SELECT * FROM risks r WHERE company_id = $1 AND risk_status != 'Closed'
+              AND version = (SELECT MAX(version) FROM risks r2 WHERE r2.company_id = r.company_id AND r2.risk_uid = r.risk_uid)
+              ${riskScope ? `AND ${riskScope.clause}` : ''}`;
+
+        const [risksResRaw, krisRes, obligationsRes, issuesRes] = await Promise.all([
+            pool.query(latestRisksQuery, riskScope ? [req.company.id, riskScope.value] : [req.company.id]),
+            pool.query(
+                `SELECT * FROM kris WHERE company_id = $1 ${kriScope ? `AND ${kriScope.clause}` : ''}`,
+                kriScope ? [req.company.id, kriScope.value] : [req.company.id]
+            ),
+            pool.query(
+                `SELECT * FROM compliance_obligations WHERE company_id = $1 ${obligationScope ? `AND ${obligationScope.clause}` : ''}`,
+                obligationScope ? [req.company.id, obligationScope.value] : [req.company.id]
+            ),
+            pool.query(
+                `SELECT * FROM issues WHERE company_id = $1 ${issueScope ? `AND ${issueScope.clause}` : ''}`,
+                issueScope ? [req.company.id, issueScope.value] : [req.company.id]
+            ),
+        ]);
+
+        // Enrich with appetite_breach / reassessment_recommended (same
+        // logic as the Risk Register list).
+        const risksRes = { rows: await attachControlsAndMitigations(risksResRaw.rows) };
+
+        // ---- Risk heatmap (5x5) + top risks by residual score ----
+        const heatmap = [];
+        for (let impact = 5; impact >= 1; impact--) {
+            for (let likelihood = 1; likelihood <= 5; likelihood++) {
+                const count = risksRes.rows.filter((r) => r.residual_likelihood === likelihood && r.residual_impact === impact).length;
+                heatmap.push({ likelihood, impact, score: likelihood * impact, count });
+            }
+        }
+
+        const topRisks = [...risksRes.rows]
+            .map((r) => ({
+                risk_uid: r.risk_uid,
+                department: r.department,
+                risk_detail: r.risk_detail,
+                risk_owner: r.risk_owner,
+                residual_score: r.residual_likelihood * r.residual_impact,
+                residual_likelihood: r.residual_likelihood,
+                residual_impact: r.residual_impact,
+                directional_trend: r.directional_trend,
+                approval_status: r.approval_status,
+            }))
+            .sort((a, b) => b.residual_score - a.residual_score)
+            .slice(0, 10);
+
+        // ---- KRI summary: Green/Amber/Red counts, Red items named ----
+        const kriIds = krisRes.rows.map((k) => k.id);
+        let latestByKri = {};
+        if (kriIds.length > 0) {
+            const measurementsRes = await pool.query(
+                `SELECT * FROM (
+                    SELECT kri_id, value, measurement_date,
+                           ROW_NUMBER() OVER (PARTITION BY kri_id ORDER BY measurement_date DESC, id DESC) AS rn
+                    FROM kri_measurements WHERE kri_id = ANY($1::int[])
+                 ) sub WHERE rn = 1`,
+                [kriIds]
+            );
+            for (const m of measurementsRes.rows) latestByKri[m.kri_id] = m.value;
+        }
+
+        const kriSummary = { green: 0, amber: 0, red: 0, none: 0, red_items: [] };
+        for (const k of krisRes.rows) {
+            const value = latestByKri[k.id] ?? null;
+            const band = computeKriBand(k, value);
+            if (band === 'Green') kriSummary.green++;
+            else if (band === 'Amber') kriSummary.amber++;
+            else if (band === 'Red') {
+                kriSummary.red++;
+                kriSummary.red_items.push({ kri_uid: k.kri_uid, name: k.name, current_value: value });
+            } else kriSummary.none++;
+        }
+
+        // ---- Compliance status summary: overall % + by regulator ----
+        const statusKeys = ['Compliant', 'Partially Compliant', 'Non-Compliant', 'Not Yet Assessed'];
+        const overall = { total: obligationsRes.rows.length };
+        for (const s of statusKeys) overall[s] = obligationsRes.rows.filter((o) => o.compliance_status === s).length;
+
+        const byRegulator = {};
+        for (const o of obligationsRes.rows) {
+            const key = o.regulatory_body || 'Unspecified';
+            if (!byRegulator[key]) {
+                byRegulator[key] = { regulatory_body: key, total: 0, Compliant: 0, 'Partially Compliant': 0, 'Non-Compliant': 0, 'Not Yet Assessed': 0 };
+            }
+            byRegulator[key].total++;
+            byRegulator[key][o.compliance_status]++;
+        }
+
+        // ---- Open issues by priority and age (flag >30 days overdue) ----
+        const openIssues = issuesRes.rows.filter((i) => OPEN_ISSUE_STATUSES.includes(i.status));
+        const byPriority = { Critical: 0, High: 0, Medium: 0, Low: 0 };
+        for (const i of openIssues) byPriority[i.priority] = (byPriority[i.priority] || 0) + 1;
+
+        const today = new Date();
+        const overdueIssues = openIssues
+            .filter((i) => i.due_date && daysBetween(today, new Date(i.due_date)) > 30)
+            .map((i) => ({
+                issue_uid: i.issue_uid,
+                description: i.description,
+                priority: i.priority,
+                owner: i.owner,
+                due_date: i.due_date,
+                days_overdue: daysBetween(today, new Date(i.due_date)),
+            }))
+            .sort((a, b) => b.days_overdue - a.days_overdue);
+
+        // ---- Risk Accepted register: B1 risks + D issues, with review dates ----
+        const acceptedRisks = risksRes.rows
+            .filter((r) => r.treatment_strategy === 'Accept')
+            .map((r) => ({
+                risk_uid: r.risk_uid,
+                risk_detail: r.risk_detail,
+                residual_score: r.residual_likelihood * r.residual_impact,
+                accept_approved_by: r.accept_approved_by,
+                treatment_plan_rationale: r.treatment_plan_rationale,
+                next_review_date: r.next_review_date,
+            }));
+
+        const acceptedIssues = issuesRes.rows
+            .filter((i) => i.status === 'Risk Accepted')
+            .map((i) => ({
+                issue_uid: i.issue_uid,
+                description: i.description,
+                accepted_approved_by: i.accepted_approved_by,
+                disposition_rationale: i.disposition_rationale,
+                accepted_review_date: i.accepted_review_date,
+            }));
+
+        // ---- Risk appetite breaches: residual score exceeds the
+        // owner-defined tolerance threshold ----
+        const appetiteBreaches = risksRes.rows
+            .filter((r) => r.appetite_breach)
+            .map((r) => ({
+                risk_uid: r.risk_uid,
+                risk_detail: r.risk_detail,
+                department: r.department,
+                residual_score: r.residual_score,
+                tolerance_threshold_score: r.tolerance_threshold_score,
+            }))
+            .sort((a, b) => b.residual_score - a.residual_score);
+
+        // ---- Risks flagged for reassessment: a linked control was tested
+        // as non-Effective more recently than this risk was assessed ----
+        const reassessmentRecommended = risksRes.rows
+            .filter((r) => r.reassessment_recommended)
+            .map((r) => ({ risk_uid: r.risk_uid, risk_detail: r.risk_detail, department: r.department, residual_score: r.residual_score }));
+
+        // ---- Risk movement: top movers vs. their immediately preceding
+        // version (same comparison that produced directional_trend) ----
+        const movedRisks = risksRes.rows.filter((r) => r.version > 1 && r.directional_trend !== 'STABLE');
+        let riskMovement = [];
+        if (movedRisks.length > 0) {
+            const uids = [...new Set(movedRisks.map((r) => r.risk_uid))];
+            const versionsRes = await pool.query(
+                `SELECT risk_uid, version, residual_likelihood, residual_impact, reporting_quarter FROM risks WHERE company_id = $1 AND risk_uid = ANY($2::text[])`,
+                [req.company.id, uids]
+            );
+            const byUid = {};
+            for (const row of versionsRes.rows) (byUid[row.risk_uid] = byUid[row.risk_uid] || []).push(row);
+
+            riskMovement = movedRisks
+                .map((r) => {
+                    const prev = (byUid[r.risk_uid] || []).find((v) => v.version === r.version - 1);
+                    if (!prev) return null;
+                    const previousScore = prev.residual_likelihood * prev.residual_impact;
+                    return {
+                        risk_uid: r.risk_uid,
+                        risk_detail: r.risk_detail,
+                        department: r.department,
+                        current_score: r.residual_score,
+                        previous_score: previousScore,
+                        delta: r.residual_score - previousScore,
+                        direction: r.directional_trend,
+                        current_quarter: r.reporting_quarter,
+                        previous_quarter: prev.reporting_quarter,
+                    };
+                })
+                .filter(Boolean)
+                .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
+                .slice(0, 10);
+        }
+
+        res.json({
+            risk_heatmap: heatmap,
+            top_risks: topRisks,
+            appetite_breaches: appetiteBreaches,
+            reassessment_recommended: reassessmentRecommended,
+            risk_movement: riskMovement,
+            kri_summary: kriSummary,
+            compliance_summary: { overall, by_regulator: Object.values(byRegulator) },
+            issues_summary: { open_count: openIssues.length, by_priority: byPriority, overdue: overdueIssues },
+            risk_accepted_register: { risks: acceptedRisks, issues: acceptedIssues },
+        });
+    })
+);
+
+// F2: My Tasks (personalized per user). Available to every role --
+// Viewers' only task type is policy attestations; Admin/Manager get the
+// full set (control tests due, issues assigned to them, policies they
+// own/approve due for review, and KRIs they're responsible for).
+app.get(
+    '/api/dashboard/my-tasks',
+    asyncHandler(async (req, res) => {
+        const email = req.user.email.toLowerCase();
+        const today = new Date();
+
+        // Outstanding policy attestations -- relevant to every role.
+        const publishedPolicies = await pool.query(
+            `SELECT p.* FROM policies p
+             WHERE p.company_id = $1 AND p.status = 'Published'
+               AND p.version = (SELECT MAX(version) FROM policies p2 WHERE p2.company_id = p.company_id AND p2.policy_uid = p.policy_uid AND p2.status = 'Published')`,
+            [req.company.id]
+        );
+        const policyIds = publishedPolicies.rows.map((p) => p.id);
+        let attestedSet = new Set();
+        if (policyIds.length > 0) {
+            const attestedRes = await pool.query(
+                `SELECT policy_id FROM policy_attestations WHERE policy_id = ANY($1::int[]) AND lower(user_email) = $2`,
+                [policyIds, email]
+            );
+            attestedSet = new Set(attestedRes.rows.map((a) => a.policy_id));
+        }
+        const pendingAttestations = publishedPolicies.rows
+            .filter((p) => !attestedSet.has(p.id))
+            .map((p) => ({ policy_uid: p.policy_uid, name: p.name, category: p.category }));
+
+        if (req.company.role === 'Viewer') {
+            return res.json({ pending_attestations: pendingAttestations });
+        }
+
+        // Control tests due/overdue (B2) -- mine if I'm Responsible (owner),
+        // Accountable, Consulted, or Informed (A2 RACI).
+        const myControls = await pool.query(
+            `SELECT * FROM controls_lib WHERE company_id = $1
+               AND (lower(owner) = $2 OR lower(accountable) = $2 OR lower(consulted) = $2 OR lower(informed) = $2)`,
+            [req.company.id, email]
+        );
+        const controlTasks = myControls.rows
+            .map((c) => {
+                const months = TESTING_FREQUENCY_MONTHS[c.testing_frequency] || 12;
+                const nextDue = c.last_test_date ? addMonths(new Date(c.last_test_date), months) : null;
+                const daysOverdue = nextDue ? daysBetween(today, nextDue) : null; // positive = overdue, negative = days remaining
+                return {
+                    control_uid: c.control_uid,
+                    name: c.name,
+                    testing_frequency: c.testing_frequency,
+                    last_test_date: c.last_test_date,
+                    last_test_result: c.last_test_result,
+                    next_due: nextDue ? nextDue.toISOString().slice(0, 10) : null,
+                    days_overdue: daysOverdue,
+                    never_tested: !c.last_test_date,
+                };
+            })
+            // Surface anything never tested, overdue, or due within 30 days.
+            .filter((c) => c.never_tested || c.days_overdue === null || c.days_overdue > -30)
+            .sort((a, b) => (b.days_overdue ?? 999) - (a.days_overdue ?? 999));
+
+        // Issues assigned to me, still open.
+        const myIssuesRes = await pool.query(
+            `SELECT * FROM issues WHERE company_id = $1 AND lower(owner) = $2 AND status = ANY($3::text[]) ORDER BY due_date ASC NULLS LAST`,
+            [req.company.id, email, OPEN_ISSUE_STATUSES]
+        );
+        const myIssues = myIssuesRes.rows.map((i) => ({
+            issue_uid: i.issue_uid,
+            description: i.description,
+            priority: i.priority,
+            status: i.status,
+            due_date: i.due_date,
+            source_type: i.source_type,
+        }));
+
+        // Policies I own or approve, due for review (or awaiting my approval).
+        const myPoliciesRes = await pool.query(
+            `SELECT * FROM policies p WHERE p.company_id = $1
+               AND (lower(content_owner) = $2 OR lower(approver) = $2)
+               AND p.version = (SELECT MAX(version) FROM policies p2 WHERE p2.company_id = p.company_id AND p2.policy_uid = p.policy_uid)`,
+            [req.company.id, email]
+        );
+        const policyTasks = myPoliciesRes.rows
+            .filter((p) => {
+                if (p.status === 'Under Review' && p.approver?.toLowerCase() === email) return true; // awaiting my approval
+                if (p.content_owner?.toLowerCase() === email && p.next_review_date) {
+                    return daysBetween(today, new Date(p.next_review_date)) <= 30; // due within 30 days or overdue
+                }
+                return false;
+            })
+            .map((p) => ({
+                policy_uid: p.policy_uid,
+                name: p.name,
+                status: p.status,
+                next_review_date: p.next_review_date,
+                awaiting_my_approval: p.status === 'Under Review' && p.approver?.toLowerCase() === email,
+            }));
+
+        // KRIs I'm responsible for -- current value, trend, zone.
+        const myKrisRes = await pool.query(`SELECT * FROM kris WHERE company_id = $1 AND lower(owner) = $2`, [req.company.id, email]);
+        const myKriIds = myKrisRes.rows.map((k) => k.id);
+        let historyByKri = {};
+        if (myKriIds.length > 0) {
+            const measurementsRes = await pool.query(
+                `SELECT * FROM (
+                    SELECT kri_id, measurement_date, value,
+                           ROW_NUMBER() OVER (PARTITION BY kri_id ORDER BY measurement_date DESC, id DESC) AS rn
+                    FROM kri_measurements WHERE kri_id = ANY($1::int[])
+                 ) sub WHERE rn <= 12 ORDER BY measurement_date ASC`,
+                [myKriIds]
+            );
+            for (const m of measurementsRes.rows) {
+                (historyByKri[m.kri_id] = historyByKri[m.kri_id] || []).push({ measurement_date: m.measurement_date, value: m.value });
+            }
+        }
+        const kriTasks = myKrisRes.rows.map((k) => {
+            const history = historyByKri[k.id] || [];
+            const current = history.length > 0 ? history[history.length - 1].value : null;
+            return { kri_uid: k.kri_uid, name: k.name, current_value: current, band: computeKriBand(k, current), history };
+        });
+
+        res.json({
+            pending_attestations: pendingAttestations,
+            control_tests: controlTasks,
+            my_issues: myIssues,
+            policy_reviews: policyTasks,
+            my_kris: kriTasks,
+        });
+    })
+);
+
+// ============================================================
+// Bulk Import (H1)
+// ============================================================
+//
+// CSV-based onboarding for clients moving off Excel. Each module has a
+// downloadable template (header row + one example row) and an import
+// endpoint that processes every row independently -- a bad row is
+// reported with its error but doesn't block the rest of the batch, so
+// a 200-row register with three typos still imports the other 197.
+
+const IMPORT_SPECS = {
+    risks: {
+        columns: [
+            'department', 'risk_category', 'sub_category', 'risk_detail', 'risk_cause', 'risk_consequence', 'risk_owner',
+            'treatment_strategy', 'inherent_likelihood', 'inherent_impact', 'residual_likelihood', 'residual_impact',
+            'tolerance_threshold', 'tolerance_threshold_score', 'risk_velocity', 'treatment_plan_rationale', 'accept_approved_by',
+            'review_frequency', 'next_review_date', 'framework_reference',
+        ],
+        example: {
+            department: 'Finance', risk_category: 'Operational Risk', sub_category: 'Process Risk',
+            risk_detail: 'Manual journal entries are not independently reviewed before posting',
+            risk_cause: 'Process - Lack of Control', risk_consequence: 'Financial Loss',
+            risk_owner: 'finance.manager@client.com', treatment_strategy: 'Mitigate / Treat (ISO Standard Target)',
+            inherent_likelihood: '4', inherent_impact: '4', residual_likelihood: '2', residual_impact: '3',
+            tolerance_threshold: '', tolerance_threshold_score: '12', risk_velocity: 'Medium-term (6-12 months)',
+            treatment_plan_rationale: '', accept_approved_by: '', review_frequency: 'Annual',
+            next_review_date: '2027-01-01', framework_reference: 'COSO',
+        },
+    },
+    controls: {
+        columns: ['name', 'description', 'control_type', 'automation', 'owner', 'testing_frequency', 'evidence_required', 'framework_reference', 'department'],
+        example: {
+            name: 'Quarterly Bank Reconciliation', description: 'All bank accounts reconciled to GL monthly',
+            control_type: 'Detective', automation: 'Manual', owner: 'finance.manager@client.com',
+            testing_frequency: 'Quarterly', evidence_required: 'Signed reconciliation worksheet', framework_reference: 'COSO',
+            department: 'Finance',
+        },
+    },
+    policies: {
+        columns: ['name', 'category', 'description', 'content_owner', 'approver', 'effective_date', 'review_frequency', 'next_review_date'],
+        example: {
+            name: 'Code of Conduct', category: 'Governance', description: 'Sets expectations for employee behaviour',
+            content_owner: 'hr.manager@client.com', approver: 'admin@client.com', effective_date: '2026-01-01',
+            review_frequency: 'Annual', next_review_date: '2027-01-01',
+        },
+    },
+    obligations: {
+        columns: [
+            'regulatory_body', 'regulation_name', 'reference', 'description', 'applicable_to', 'obligation_owner',
+            'evidence_of_compliance', 'reporting_requirement', 'next_reporting_date', 'next_review_date', 'compliance_status',
+        ],
+        example: {
+            regulatory_body: 'QCB', regulation_name: 'AML/CFT Circular', reference: 'QCB-2024-07',
+            description: 'Quarterly AML/CFT compliance reporting requirement', applicable_to: 'Finance',
+            obligation_owner: 'finance.manager@client.com', evidence_of_compliance: 'Quarterly filing confirmation',
+            reporting_requirement: 'Quarterly filing to QCB', next_reporting_date: '2026-09-30',
+            next_review_date: '2027-01-01', compliance_status: 'Not Yet Assessed',
+        },
+    },
+};
+
+app.get(
+    '/api/import/:module/template',
+    requireRole('Admin', 'Manager'),
+    (req, res) => {
+        const spec = IMPORT_SPECS[req.params.module];
+        if (!spec) return res.status(404).json({ error: 'Unknown import module' });
+
+        const csv = toCSV([spec.example], spec.columns);
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="${req.params.module}_import_template.csv"`);
+        res.send(csv);
+    }
+);
+
+const INT_1_5 = (value, fallback) => {
+    const n = parseInt(value, 10);
+    return Number.isInteger(n) && n >= 1 && n <= 5 ? n : fallback;
+};
+
+async function importRisksRow(client, req, row, reportingQuarter) {
+    const department = req.company.role === 'Manager' ? req.company.department : row.department?.trim();
+    if (!department) return { error: 'department is required' };
+    if (!row.risk_detail?.trim()) return { error: 'risk_detail is required' };
+
+    const il = INT_1_5(row.inherent_likelihood, null);
+    const ii = INT_1_5(row.inherent_impact, null);
+    const rl = INT_1_5(row.residual_likelihood, null);
+    const ri = INT_1_5(row.residual_impact, null);
+    if (!il || !ii || !rl || !ri) return { error: 'inherent/residual likelihood and impact must be 1-5' };
+
+    const treatmentStrategy = row.treatment_strategy?.trim() || 'Mitigate / Treat (ISO Standard Target)';
+    if (treatmentStrategy === 'Accept') {
+        if (!row.treatment_plan_rationale?.trim() || !row.accept_approved_by?.trim()) {
+            return { error: '"Accept" treatment requires treatment_plan_rationale and accept_approved_by' };
+        }
+        if (req.company.role === 'Manager' && row.accept_approved_by.trim().toLowerCase() === req.user.email.toLowerCase()) {
+            return { error: 'A Manager cannot self-approve a "Risk Accepted" disposition' };
+        }
+    }
+
+    const uid = await generateUniqueRiskID(client, req.company.id, department, row.risk_category?.trim() || 'Operational Risk');
+    const approvalStatus = req.company.role === 'Admin' ? 'Approved' : 'Awaiting Approval';
+
+    const VELOCITIES = ['Immediate (<1 month)', 'Short-term (1-6 months)', 'Medium-term (6-12 months)', 'Long-term (>12 months)'];
+    const riskVelocity = VELOCITIES.includes(row.risk_velocity?.trim()) ? row.risk_velocity.trim() : null;
+    let toleranceScore = null;
+    if (row.tolerance_threshold_score?.trim()) {
+        const parsed = parseInt(row.tolerance_threshold_score, 10);
+        if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 25) toleranceScore = parsed;
+    }
+
+    const insertRes = await client.query(
+        `INSERT INTO risks (
+            company_id, risk_uid, version, reporting_quarter, department, risk_category, sub_category,
+            risk_detail, risk_cause, risk_consequence, risk_owner, treatment_strategy,
+            inherent_likelihood, inherent_impact, residual_likelihood, residual_impact,
+            tolerance_threshold, treatment_plan_rationale, accept_approved_by,
+            review_frequency, next_review_date, framework_reference,
+            approval_status, assessed_by, directional_trend, tolerance_threshold_score, risk_velocity
+         ) VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,'STABLE',$24,$25)
+         RETURNING risk_uid`,
+        [
+            req.company.id, uid, reportingQuarter, department,
+            row.risk_category?.trim() || 'Operational Risk', row.sub_category?.trim() || 'Process Risk',
+            row.risk_detail.trim(), row.risk_cause?.trim() || null, row.risk_consequence?.trim() || null,
+            row.risk_owner?.trim() || null, treatmentStrategy, il, ii, rl, ri,
+            row.tolerance_threshold?.trim() || null, row.treatment_plan_rationale?.trim() || null,
+            row.accept_approved_by?.trim() || null, row.review_frequency?.trim() || 'Annual',
+            row.next_review_date?.trim() || null, row.framework_reference?.trim() || null,
+            approvalStatus, req.user.email, toleranceScore, riskVelocity,
+        ]
+    );
+    return { uid: insertRes.rows[0].risk_uid };
+}
+
+async function importControlsRow(client, req, row) {
+    if (!row.name?.trim()) return { error: 'name is required' };
+
+    const department = req.company.role === 'Manager' ? req.company.department || null : row.department?.trim() || null;
+    const controlType = ['Preventive', 'Detective', 'Corrective'].includes(row.control_type?.trim()) ? row.control_type.trim() : 'Preventive';
+    const automation = ['Manual', 'Automated'].includes(row.automation?.trim()) ? row.automation.trim() : 'Manual';
+    const frequency = ['Monthly', 'Quarterly', 'Annual'].includes(row.testing_frequency?.trim()) ? row.testing_frequency.trim() : 'Quarterly';
+
+    const uid = await generateUniqueUid(client, req.company.id, 'controls_lib', 'control_uid', 'CTL');
+    const insertRes = await client.query(
+        `INSERT INTO controls_lib (company_id, control_uid, name, description, control_type, automation, owner,
+                                    testing_frequency, evidence_required, framework_reference, department)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING control_uid`,
+        [
+            req.company.id, uid, row.name.trim(), row.description?.trim() || null, controlType, automation,
+            row.owner?.trim() || null, frequency, row.evidence_required?.trim() || null,
+            row.framework_reference?.trim() || null, department,
+        ]
+    );
+    return { uid: insertRes.rows[0].control_uid };
+}
+
+async function importPoliciesRow(client, req, row) {
+    if (!row.name?.trim()) return { error: 'name is required' };
+    const frequency = ['Monthly', 'Quarterly', 'Annual', 'Biennial'].includes(row.review_frequency?.trim()) ? row.review_frequency.trim() : 'Annual';
+
+    const uid = await generateUniqueUid(client, req.company.id, 'policies', 'policy_uid', 'POL');
+    const insertRes = await client.query(
+        `INSERT INTO policies (company_id, policy_uid, version, name, category, description, content_owner, approver,
+                                effective_date, review_frequency, next_review_date, created_by)
+         VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING policy_uid`,
+        [
+            req.company.id, uid, row.name.trim(), row.category?.trim() || 'Governance', row.description?.trim() || null,
+            row.content_owner?.trim() || null, row.approver?.trim() || null, row.effective_date?.trim() || null,
+            frequency, row.next_review_date?.trim() || null, req.user.email,
+        ]
+    );
+    return { uid: insertRes.rows[0].policy_uid };
+}
+
+async function importObligationsRow(client, req, row) {
+    if (!row.regulation_name?.trim()) return { error: 'regulation_name is required' };
+
+    const applicableTo = req.company.role === 'Manager' ? req.company.department || null : row.applicable_to?.trim() || null;
+    const validStatuses = ['Compliant', 'Partially Compliant', 'Non-Compliant', 'Not Yet Assessed'];
+    const status = validStatuses.includes(row.compliance_status?.trim()) ? row.compliance_status.trim() : 'Not Yet Assessed';
+
+    const uid = await generateUniqueUid(client, req.company.id, 'compliance_obligations', 'obligation_uid', 'OBL');
+    const insertRes = await client.query(
+        `INSERT INTO compliance_obligations (
+            company_id, obligation_uid, regulatory_body, regulation_name, reference, description, applicable_to,
+            compliance_status, obligation_owner, evidence_of_compliance, reporting_requirement, next_reporting_date,
+            next_review_date, created_by
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING obligation_uid`,
+        [
+            req.company.id, uid, row.regulatory_body?.trim() || null, row.regulation_name.trim(),
+            row.reference?.trim() || null, row.description?.trim() || null, applicableTo, status,
+            row.obligation_owner?.trim() || null, row.evidence_of_compliance?.trim() || null,
+            row.reporting_requirement?.trim() || null, row.next_reporting_date?.trim() || null,
+            row.next_review_date?.trim() || null, req.user.email,
+        ]
+    );
+
+    await client.query('INSERT INTO obligation_status_history (obligation_id, status, notes, changed_by) VALUES ((SELECT id FROM compliance_obligations WHERE company_id=$1 AND obligation_uid=$2), $3, $4, $5)', [
+        req.company.id, insertRes.rows[0].obligation_uid, status, 'Imported', req.user.email,
+    ]);
+
+    return { uid: insertRes.rows[0].obligation_uid };
+}
+
+const IMPORT_ROW_HANDLERS = {
+    risks: importRisksRow,
+    controls: importControlsRow,
+    policies: importPoliciesRow,
+    obligations: importObligationsRow,
+};
+
+app.post(
+    '/api/import/:module',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const handler = IMPORT_ROW_HANDLERS[req.params.module];
+        if (!handler) return res.status(404).json({ error: 'Unknown import module' });
+        if (!req.body.csv) return res.status(400).json({ error: 'csv (text) is required' });
+
+        const rows = parseCSV(req.body.csv);
+        if (rows.length === 0) return res.status(400).json({ error: 'No data rows found in CSV' });
+        if (rows.length > 1000) return res.status(400).json({ error: 'Import is limited to 1000 rows per file' });
+
+        // Reporting quarter for risks is computed once, same as POST /api/risks.
+        let reportingQuarter = null;
+        if (req.params.module === 'risks') {
+            const matrixRes = await pool.query('SELECT fiscal_year_start_month FROM matrix_settings WHERE company_id = $1', [req.company.id]);
+            const startMonth = matrixRes.rows[0]?.fiscal_year_start_month || 0;
+            const now = new Date();
+            let monthsSinceStart = now.getMonth() - startMonth;
+            if (monthsSinceStart < 0) monthsSinceStart += 12;
+            reportingQuarter = `Q${Math.floor(monthsSinceStart / 3) + 1}-FY${now.getFullYear()}`;
+        }
+
+        const client = await pool.connect();
+        const results = [];
+        try {
+            for (let i = 0; i < rows.length; i++) {
+                try {
+                    const outcome = await handler(client, req, rows[i], reportingQuarter);
+                    if (outcome.error) {
+                        results.push({ row: i + 2, status: 'error', error: outcome.error });
+                    } else {
+                        results.push({ row: i + 2, status: 'created', uid: outcome.uid });
+                    }
+                } catch (e) {
+                    results.push({ row: i + 2, status: 'error', error: e.message });
+                }
+            }
+        } finally {
+            client.release();
+        }
+
+        const created = results.filter((r) => r.status === 'created');
+        await logAudit(null, {
+            companyId: req.company.id,
+            entityType: req.params.module,
+            entityId: 0,
+            action: 'bulk_import',
+            actor: req.user,
+            details: { module: req.params.module, total_rows: rows.length, created: created.length, errors: rows.length - created.length },
+        });
+
+        res.json({ total_rows: rows.length, created: created.length, errors: rows.length - created.length, results });
+    })
+);
+
+// ============================================================
+// Data Export (H6)
+// ============================================================
+//
+// Per-module CSV exports of everything currently visible to the
+// requesting user (Manager exports are department-scoped, same as the
+// list endpoints) -- covers "export full dataset on request" for
+// backup/portability, and Excel opens CSV natively.
+
+const EXPORT_SPECS = {
+    risks: {
+        columns: [
+            'risk_uid', 'version', 'department', 'risk_category', 'sub_category', 'risk_detail', 'risk_cause', 'risk_consequence',
+            'risk_owner', 'treatment_strategy', 'inherent_likelihood', 'inherent_impact', 'residual_likelihood', 'residual_impact',
+            'tolerance_threshold_score', 'risk_velocity', 'risk_status', 'closure_reason',
+            'approval_status', 'directional_trend', 'next_review_date', 'framework_reference',
+        ],
+        async fetch(req) {
+            const scope = managerScopeClause(req, 'department', 2);
+            const result = await pool.query(
+                `SELECT * FROM risks r WHERE company_id = $1
+                   AND version = (SELECT MAX(version) FROM risks r2 WHERE r2.company_id = r.company_id AND r2.risk_uid = r.risk_uid)
+                   ${scope ? `AND ${scope.clause}` : ''} ORDER BY risk_uid`,
+                scope ? [req.company.id, scope.value] : [req.company.id]
+            );
+            return result.rows;
+        },
+    },
+    controls: {
+        columns: ['control_uid', 'name', 'description', 'control_type', 'automation', 'owner', 'department', 'testing_frequency', 'last_test_date', 'last_test_result', 'framework_reference'],
+        async fetch(req) {
+            const scope = managerScopeClause(req, 'department', 2);
+            const result = await pool.query(
+                `SELECT * FROM controls_lib WHERE company_id = $1 ${scope ? `AND ${scope.clause}` : ''} ORDER BY control_uid`,
+                scope ? [req.company.id, scope.value] : [req.company.id]
+            );
+            return result.rows;
+        },
+    },
+    kris: {
+        columns: ['kri_uid', 'name', 'definition', 'owner', 'department', 'measurement_frequency', 'threshold_source', 'internal_tolerance', 'regulatory_limit', 'breach_direction'],
+        async fetch(req) {
+            const scope = managerScopeClause(req, 'department', 2);
+            const result = await pool.query(
+                `SELECT * FROM kris WHERE company_id = $1 ${scope ? `AND ${scope.clause}` : ''} ORDER BY kri_uid`,
+                scope ? [req.company.id, scope.value] : [req.company.id]
+            );
+            return result.rows;
+        },
+    },
+    policies: {
+        columns: ['policy_uid', 'version', 'name', 'category', 'description', 'status', 'content_owner', 'approver', 'effective_date', 'review_frequency', 'next_review_date'],
+        async fetch(req) {
+            const result = await pool.query('SELECT * FROM policies WHERE company_id = $1 ORDER BY policy_uid, version', [req.company.id]);
+            return result.rows;
+        },
+    },
+    obligations: {
+        columns: ['obligation_uid', 'regulatory_body', 'regulation_name', 'reference', 'description', 'applicable_to', 'compliance_status', 'obligation_owner', 'reporting_requirement', 'next_reporting_date', 'next_review_date'],
+        async fetch(req) {
+            const scope = managerScopeClause(req, 'applicable_to', 2);
+            const result = await pool.query(
+                `SELECT * FROM compliance_obligations WHERE company_id = $1 ${scope ? `AND ${scope.clause}` : ''} ORDER BY obligation_uid`,
+                scope ? [req.company.id, scope.value] : [req.company.id]
+            );
+            return result.rows;
+        },
+    },
+    issues: {
+        columns: ['issue_uid', 'source_type', 'source_detail', 'description', 'root_cause', 'remediation_plan', 'owner', 'department', 'due_date', 'priority', 'status'],
+        async fetch(req) {
+            const scope = managerScopeClause(req, 'department', 2);
+            const result = await pool.query(
+                `SELECT * FROM issues WHERE company_id = $1 ${scope ? `AND ${scope.clause}` : ''} ORDER BY issue_uid`,
+                scope ? [req.company.id, scope.value] : [req.company.id]
+            );
+            return result.rows;
+        },
+    },
+};
+
+app.get(
+    '/api/export/:module',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const spec = EXPORT_SPECS[req.params.module];
+        if (!spec) return res.status(404).json({ error: 'Unknown export module' });
+
+        const rows = await spec.fetch(req);
+        const csv = toCSV(rows, spec.columns);
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="${req.params.module}_export.csv"`);
+        res.send(csv);
+    })
+);
+
+// ============================================================
+// Global Search (H8)
+// ============================================================
+//
+// "Where does X show up" -- searches Risks, Controls, Policies,
+// Compliance Obligations, KRIs, and Issues by ID, name, or keyword.
+// Respects the same department scoping as each module's list view.
+
+app.get(
+    '/api/search',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const q = (req.query.q || '').trim();
+        if (q.length < 2) return res.json({ results: [] });
+        const like = `%${q}%`;
+
+        const riskScope = managerScopeClause(req, 'department', 3);
+        const controlScope = managerScopeClause(req, 'department', 3);
+        const kriScope = managerScopeClause(req, 'department', 3);
+        const obligationScope = managerScopeClause(req, 'applicable_to', 3);
+        const issueScope = managerScopeClause(req, 'department', 3);
+
+        const buildParams = (scope) => (scope ? [req.company.id, like, scope.value] : [req.company.id, like]);
+
+        const [risks, controls, policies, kris, obligations, issues] = await Promise.all([
+            pool.query(
+                `SELECT risk_uid AS uid, risk_detail AS title, department AS subtitle FROM risks r WHERE company_id = $1
+                   AND (risk_uid ILIKE $2 OR risk_detail ILIKE $2)
+                   AND version = (SELECT MAX(version) FROM risks r2 WHERE r2.company_id = r.company_id AND r2.risk_uid = r.risk_uid)
+                   ${riskScope ? `AND ${riskScope.clause}` : ''} ORDER BY risk_uid LIMIT 10`,
+                buildParams(riskScope)
+            ),
+            pool.query(
+                `SELECT control_uid AS uid, name AS title, department AS subtitle FROM controls_lib WHERE company_id = $1
+                   AND (control_uid ILIKE $2 OR name ILIKE $2 OR description ILIKE $2)
+                   ${controlScope ? `AND ${controlScope.clause}` : ''} ORDER BY control_uid LIMIT 10`,
+                buildParams(controlScope)
+            ),
+            pool.query(
+                `SELECT policy_uid AS uid, name AS title, status AS subtitle FROM policies p WHERE company_id = $1
+                   AND (policy_uid ILIKE $2 OR name ILIKE $2 OR description ILIKE $2)
+                   AND version = (SELECT MAX(version) FROM policies p2 WHERE p2.company_id = p.company_id AND p2.policy_uid = p.policy_uid)
+                   ORDER BY policy_uid LIMIT 10`,
+                [req.company.id, like]
+            ),
+            pool.query(
+                `SELECT kri_uid AS uid, name AS title, department AS subtitle FROM kris WHERE company_id = $1
+                   AND (kri_uid ILIKE $2 OR name ILIKE $2 OR definition ILIKE $2)
+                   ${kriScope ? `AND ${kriScope.clause}` : ''} ORDER BY kri_uid LIMIT 10`,
+                buildParams(kriScope)
+            ),
+            pool.query(
+                `SELECT obligation_uid AS uid, regulation_name AS title, applicable_to AS subtitle FROM compliance_obligations WHERE company_id = $1
+                   AND (obligation_uid ILIKE $2 OR regulation_name ILIKE $2 OR description ILIKE $2 OR reference ILIKE $2)
+                   ${obligationScope ? `AND ${obligationScope.clause}` : ''} ORDER BY obligation_uid LIMIT 10`,
+                buildParams(obligationScope)
+            ),
+            pool.query(
+                `SELECT issue_uid AS uid, description AS title, status AS subtitle FROM issues WHERE company_id = $1
+                   AND (issue_uid ILIKE $2 OR description ILIKE $2 OR root_cause ILIKE $2)
+                   ${issueScope ? `AND ${issueScope.clause}` : ''} ORDER BY issue_uid LIMIT 10`,
+                buildParams(issueScope)
+            ),
+        ]);
+
+        res.json({
+            results: {
+                risks: risks.rows,
+                controls: controls.rows,
+                policies: policies.rows,
+                kris: kris.rows,
+                obligations: obligations.rows,
+                issues: issues.rows,
+            },
+        });
+    })
+);
+
+// ============================================================
+// Escalation Rules & Notifications (G5)
+// ============================================================
+//
+// Configurable workflow: the Client Admin defines, per trigger type, who
+// gets notified and (optionally) who it escalates to after how many days.
+// GET /api/notifications computes current notifications from these rules
+// against live data -- the same overdue/breach logic as F2 My Tasks and
+// F1 Management Summary, just filtered through the configured targets.
+// Email delivery is a follow-on once an SMTP provider is configured; this
+// phase delivers the in-app side and the configuration screen.
+
+app.get(
+    '/api/escalation-rules',
+    requireRole('Admin'),
+    asyncHandler(async (req, res) => {
+        const result = await pool.query('SELECT * FROM escalation_rules WHERE company_id = $1 ORDER BY trigger_type', [req.company.id]);
+        res.json(result.rows);
+    })
+);
+
+app.patch(
+    '/api/escalation-rules/:id',
+    requireRole('Admin'),
+    asyncHandler(async (req, res) => {
+        const fields = ['threshold_days', 'notify_target', 'escalate_after_days', 'escalate_to', 'channels', 'is_active'];
+        const updates = [];
+        const values = [];
+        for (const f of fields) {
+            if (req.body[f] !== undefined) {
+                values.push(req.body[f]);
+                updates.push(`${f} = $${values.length}`);
+            }
+        }
+        if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+
+        values.push(req.params.id, req.company.id);
+        const result = await pool.query(
+            `UPDATE escalation_rules SET ${updates.join(', ')} WHERE id = $${values.length - 1} AND company_id = $${values.length} RETURNING *`,
+            values
+        );
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Escalation rule not found' });
+
+        await logAudit(null, {
+            companyId: req.company.id,
+            entityType: 'escalation_rule',
+            entityId: result.rows[0].id,
+            action: 'update',
+            actor: req.user,
+            details: req.body,
+        });
+
+        res.json(result.rows[0]);
+    })
+);
+
+// Resolves who an escalation rule's target maps to for a given item.
+// "Owner" = the item's own owner field; "Department Manager" = any
+// Manager whose department matches the item's department (or any Manager
+// if the item is enterprise-wide); "Admin" = any Admin of the company.
+function resolveNotifyTargets(target, itemDepartment, itemOwner, usersByEmail, managersByDept, admins) {
+    if (target === 'Owner') return itemOwner ? [itemOwner] : [];
+    if (target === 'Admin') return admins;
+    if (target === 'Department Manager') {
+        if (!itemDepartment) return admins; // enterprise-wide items escalate straight to Admin-equivalent oversight
+        return managersByDept[itemDepartment.toLowerCase()] || [];
+    }
+    return [];
+}
+
+app.get(
+    '/api/notifications',
+    requireRole('Admin', 'Manager'),
+    asyncHandler(async (req, res) => {
+        const rulesRes = await pool.query('SELECT * FROM escalation_rules WHERE company_id = $1 AND is_active = true', [req.company.id]);
+        const rules = {};
+        for (const r of rulesRes.rows) rules[r.trigger_type] = r;
+
+        const usersRes = await pool.query(
+            `SELECT u.email, uc.role, uc.department FROM user_companies uc JOIN users u ON u.id = uc.user_id WHERE uc.company_id = $1 AND u.is_active = true`,
+            [req.company.id]
+        );
+        const admins = usersRes.rows.filter((u) => u.role === 'Admin').map((u) => u.email);
+        const managersByDept = {};
+        for (const u of usersRes.rows) {
+            if (u.role === 'Manager' && u.department) {
+                const key = u.department.toLowerCase();
+                (managersByDept[key] = managersByDept[key] || []).push(u.email);
+            }
+        }
+
+        const today = new Date();
+        const notifications = [];
+
+        const isForMe = (recipients) => recipients.some((r) => r.toLowerCase() === req.user.email.toLowerCase());
+        const escalationLevel = (rule, daysPast) => {
+            if (rule.escalate_after_days != null && daysPast >= rule.threshold_days + rule.escalate_after_days) return 'escalated';
+            return 'initial';
+        };
+
+        // -- Control tests overdue --
+        if (rules.control_test_overdue) {
+            const rule = rules.control_test_overdue;
+            const controlsRes = await pool.query('SELECT * FROM controls_lib WHERE company_id = $1', [req.company.id]);
+            for (const c of controlsRes.rows) {
+                if (!c.last_test_date) continue;
+                const months = TESTING_FREQUENCY_MONTHS[c.testing_frequency] || 12;
+                const nextDue = addMonths(new Date(c.last_test_date), months);
+                const daysPast = daysBetween(today, nextDue);
+                if (daysPast < rule.threshold_days) continue;
+                const level = escalationLevel(rule, daysPast);
+                const recipients = resolveNotifyTargets(level === 'escalated' ? rule.escalate_to : rule.notify_target, c.department, c.owner, null, managersByDept, admins);
+                if (isForMe(recipients)) {
+                    notifications.push({
+                        type: 'control_test_overdue', level, entity_uid: c.control_uid, entity_name: c.name,
+                        message: `Control ${c.control_uid} (${c.name}) test is ${daysPast} day(s) overdue`, days_past: daysPast,
+                    });
+                }
+            }
+        }
+
+        // -- KRI Red breaches --
+        if (rules.kri_red_breach) {
+            const rule = rules.kri_red_breach;
+            const krisRes = await pool.query('SELECT * FROM kris WHERE company_id = $1', [req.company.id]);
+            for (const k of krisRes.rows) {
+                const latestRes = await pool.query(
+                    `SELECT value, measurement_date FROM kri_measurements WHERE kri_id = $1 ORDER BY measurement_date DESC, id DESC LIMIT 1`,
+                    [k.id]
+                );
+                if (latestRes.rows.length === 0) continue;
+                const { value, measurement_date } = latestRes.rows[0];
+                if (computeKriBand(k, value) !== 'Red') continue;
+                const daysPast = daysBetween(today, new Date(measurement_date));
+                if (daysPast < rule.threshold_days) continue;
+                const level = escalationLevel(rule, daysPast);
+                const recipients = resolveNotifyTargets(level === 'escalated' ? rule.escalate_to : rule.notify_target, k.department, k.owner, null, managersByDept, admins);
+                if (isForMe(recipients)) {
+                    notifications.push({
+                        type: 'kri_red_breach', level, entity_uid: k.kri_uid, entity_name: k.name,
+                        message: `KRI ${k.kri_uid} (${k.name}) is in the Red zone (value ${value})`, days_past: daysPast,
+                    });
+                }
+            }
+        }
+
+        // -- Policy reviews due --
+        if (rules.policy_review_due) {
+            const rule = rules.policy_review_due;
+            const policiesRes = await pool.query(
+                `SELECT * FROM policies p WHERE company_id = $1 AND next_review_date IS NOT NULL
+                   AND version = (SELECT MAX(version) FROM policies p2 WHERE p2.company_id = p.company_id AND p2.policy_uid = p.policy_uid)`,
+                [req.company.id]
+            );
+            for (const p of policiesRes.rows) {
+                const daysPast = daysBetween(today, new Date(p.next_review_date));
+                if (daysPast < -rule.threshold_days) continue; // not yet within the notification window
+                const level = escalationLevel(rule, daysPast);
+                const recipients = resolveNotifyTargets(level === 'escalated' ? rule.escalate_to : rule.notify_target, null, p.content_owner, null, managersByDept, admins);
+                if (isForMe(recipients)) {
+                    notifications.push({
+                        type: 'policy_review_due', level, entity_uid: p.policy_uid, entity_name: p.name,
+                        message: daysPast >= 0 ? `Policy ${p.policy_uid} (${p.name}) review is ${daysPast} day(s) overdue` : `Policy ${p.policy_uid} (${p.name}) review is due in ${-daysPast} day(s)`,
+                        days_past: daysPast,
+                    });
+                }
+            }
+        }
+
+        // -- Issues overdue --
+        if (rules.issue_overdue) {
+            const rule = rules.issue_overdue;
+            const issuesRes = await pool.query(
+                `SELECT * FROM issues WHERE company_id = $1 AND status = ANY($2::text[]) AND due_date IS NOT NULL`,
+                [req.company.id, OPEN_ISSUE_STATUSES]
+            );
+            for (const i of issuesRes.rows) {
+                const daysPast = daysBetween(today, new Date(i.due_date));
+                if (daysPast < rule.threshold_days) continue;
+                const level = escalationLevel(rule, daysPast);
+                const recipients = resolveNotifyTargets(level === 'escalated' ? rule.escalate_to : rule.notify_target, i.department, i.owner, null, managersByDept, admins);
+                if (isForMe(recipients)) {
+                    notifications.push({
+                        type: 'issue_overdue', level, entity_uid: i.issue_uid, entity_name: i.description,
+                        message: `Issue ${i.issue_uid} is ${daysPast} day(s) overdue`, days_past: daysPast,
+                    });
+                }
+            }
+        }
+
+        // -- Obligations Non-Compliant --
+        if (rules.obligation_non_compliant) {
+            const rule = rules.obligation_non_compliant;
+            const obligationsRes = await pool.query(
+                `SELECT o.*, (SELECT MAX(changed_at) FROM obligation_status_history h WHERE h.obligation_id = o.id AND h.status = 'Non-Compliant') AS flagged_at
+                 FROM compliance_obligations o WHERE company_id = $1 AND compliance_status = 'Non-Compliant'`,
+                [req.company.id]
+            );
+            for (const o of obligationsRes.rows) {
+                const flaggedAt = o.flagged_at ? new Date(o.flagged_at) : today;
+                const daysPast = daysBetween(today, flaggedAt);
+                if (daysPast < rule.threshold_days) continue;
+                const level = escalationLevel(rule, daysPast);
+                const recipients = resolveNotifyTargets(level === 'escalated' ? rule.escalate_to : rule.notify_target, o.applicable_to, o.obligation_owner, null, managersByDept, admins);
+                if (isForMe(recipients)) {
+                    notifications.push({
+                        type: 'obligation_non_compliant', level, entity_uid: o.obligation_uid, entity_name: o.regulation_name,
+                        message: `Obligation ${o.obligation_uid} (${o.regulation_name}) is Non-Compliant`, days_past: daysPast,
+                    });
+                }
+            }
+        }
+
+        notifications.sort((a, b) => b.days_past - a.days_past);
+        res.json({ notifications });
+    })
+);
+
+
+app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+
+app.use((err, req, res, next) => {
+    console.error(err);
+    res.status(500).json({ error: 'Internal server error' });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 GRC Workstation (v2, multi-tenant) running on port ${PORT}`));

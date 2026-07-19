@@ -1,0 +1,38 @@
+# ---- Stage 1: build the React frontend ----
+FROM node:20-alpine AS frontend-build
+WORKDIR /usr/src/app/frontend
+
+COPY frontend/package*.json ./
+RUN npm ci
+
+COPY frontend/ ./
+# Builds straight into ../public (see frontend/vite.config.js)
+RUN npm run build
+
+# ---- Stage 2: install backend deps ----
+FROM node:20-alpine AS backend-build
+WORKDIR /usr/src/app
+
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+# ---- Runtime stage ----
+FROM node:20-alpine
+WORKDIR /usr/src/app
+
+# Run as a non-root user inside the container
+RUN addgroup -S app && adduser -S app -G app
+
+COPY --from=backend-build /usr/src/app/node_modules ./node_modules
+COPY package*.json ./
+COPY server.js auth.js db.js csv.js ./
+COPY schema_v2.sql schema_v3_additions.sql schema_v4_additions.sql schema_v5_additions.sql schema_v6_additions.sql schema_v7_additions.sql schema_v8_additions.sql schema_v9_additions.sql ./
+COPY migrate-all.js bootstrap-tenant.js ./
+COPY migrate-v1-to-v2.js migrate-v2-to-v3.js migrate-v3-to-v4.js migrate-v4-to-v5.js migrate-v5-to-v6.js migrate-v6-to-v7.js migrate-v7-to-v8.js migrate-v8-to-v9.js ./
+COPY --from=frontend-build /usr/src/app/public ./public
+
+USER app
+EXPOSE 8080
+ENV NODE_ENV=production
+
+CMD [ "node", "server.js" ]

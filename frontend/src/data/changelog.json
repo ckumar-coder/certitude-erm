@@ -1,0 +1,1638 @@
+[
+  {
+    "version": "2.41.1",
+    "date": "19 Jul 2026",
+    "type": "Bug Fix",
+    "user_bullets": [
+      "Super Admin created risks now auto-approve immediately (no manual approval step required).",
+      "Risk Library search now returns sector-specific risks — 107 risks across 18 sectors including Logistics, Government, Financial Services, Oil & Gas, and more.",
+      "Edit Risk button now available for approved open risks for Risk Managers and above."
+    ],
+    "bullets": [
+      "server.js POST /risks + PATCH /risks draft-submit: added functional_role === 'Super Admin' to auto-approve path alongside CRO/Consultant CRO.",
+      "RiskRegister.jsx RiskDetail: added isSuperAdmin constant to fix ReferenceError blank screen; extended canManageLifecycle, croCanApprove, and CRO action panel to include Super Admin.",
+      "schema_v70_risk_library_seed.sql: TRUNCATE + 107 sector-specific risks replacing the single placeholder row from v34.",
+      "migrate-all.js: added schema_v70_risk_library_seed.sql to migration sequence."
+    ]
+  },
+  {
+    "version": "2.41.0",
+    "date": "19 Jul 2026",
+    "type": "Feature",
+    "user_bullets": [
+      "Full Arabic / English language toggle — switch the entire app to Arabic with RTL layout in one click.",
+      "Dashboard, Risk Governance Documents, and Forms & Templates now fully translated into Arabic.",
+      "Sidebar language toggle persists across sessions."
+    ],
+    "bullets": [
+      "ManagementSummary.jsx: all KPI strip, section headers, table headers, alert messages, and status labels translated via useT().",
+      "RiskGovDocs.jsx: titles, buttons, table headers, modals, and upload wizard fully i18n'd.",
+      "FormsTemplates.jsx: template cards, AcceptedRiskReport wizard steps, table headers, and action buttons fully i18n'd.",
+      "translations.js: added dash_obs_label key for compliance section subtitle."
+    ]
+  },
+  {
+    "version": "2.40.0",
+    "date": "19 Jul 2026",
+    "type": "Feature",
+    "user_bullets": [
+      "New Forms & Templates module — generate professional, print-ready documents on company letterhead for board and audit committee filing.",
+      "Accepted Risk Report: select a date range, review all CRO-accepted risks in that period, add a covering statement and per-risk commentary, then print a formatted report with your company logo, risk scores, signature block, and confidential footer.",
+      "Restricted to CRO, Consultant CRO, Admin, and Super Admin roles."
+    ],
+    "bullets": [
+      "Backend: GET /api/forms/accepted-risks — returns accepted risks filtered by cro_actioned_at date range with CRO user name.",
+      "Frontend: FormsTemplates.jsx — template card landing view + Accepted Risk Report config panel (date range, risk table, per-risk commentary, covering statement) + print window with letterhead and signature block.",
+      "App.jsx + Layout.jsx wired up with forms-templates nav item in Risk group."
+    ]
+  },
+  {
+    "version": "2.39.0",
+    "date": "19 Jul 2026",
+    "type": "Feature",
+    "user_bullets": [
+      "New Risk Governance Documents module — upload, version, and manage board approvals, policies, audit reports, and other governance records.",
+      "Documents are organised into categories (e.g. Board & Governance, Policies & Frameworks, Audit & Assurance) with unique Doc IDs in the format CODE-YEAR-SEQ.",
+      "Full version history per document — upload new versions without losing prior copies.",
+      "Restricted to CRO, Consultant CRO, Risk Manager, Admin, and Super Admin roles."
+    ],
+    "bullets": [
+      "schema_v69_risk_governance_docs.sql: risk_gov_categories and risk_gov_documents tables with 8 default categories seeded per company.",
+      "Backend: 9 new API routes under /api/risk-gov/ — categories CRUD, document upload via GCS signed URLs, versioning, download signed URLs, and delete.",
+      "Frontend: RiskGovDocs.jsx — category management panel, filterable document table, upload modal, version history panel.",
+      "App.jsx + Layout.jsx wired up with risk-gov-docs nav item in Risk group."
+    ]
+  },
+  {
+    "version": "2.38.0",
+    "date": "19 Jul 2026",
+    "type": "Enhancement",
+    "user_bullets": [
+      "Super Admin role added — provides unrestricted access to all modules and features for testing purposes."
+    ],
+    "bullets": [
+      "New Super Admin role added to user_companies role constraint (schema_v68).",
+      "Backend requireRole() bypass extended to Super Admin.",
+      "Frontend: Super Admin added to all role arrays and content conditions in Layout.jsx and App.jsx.",
+      "Super Admin available in the Users & Access role dropdown.",
+      "Super Admin lands on Risk Register by default and can navigate to all pages without restriction."
+    ]
+  },
+  {
+    "version": "2.37.7",
+    "date": "18 Jul 2026",
+    "type": "Patch",
+    "user_bullets": [
+      "Several stability improvements: resolved errors when saving risks and KRIs with certain optional fields left blank.",
+      "Issue action items module enabled.",
+      "Navigation sidebar refined."
+    ],
+    "bullets": [
+      "server.js attachControlsAndMitigations(): Promise.all → Promise.allSettled — enrichment query failures no longer abort the response.",
+      "schema_v67_issue_actions.sql: corrected FK column types TEXT → INTEGER to match users.id SERIAL.",
+      "server.js PATCH /api/risks/:id: NULLABLE_ENUM_FIELDS set (bcp_status, risk_velocity) coerces '' → null before UPDATE.",
+      "server.js POST + PATCH /api/kris: coerce '' → null for appetite_statement_id, internal_tolerance, regulatory_limit.",
+      "Layout.jsx: Training Videos hidden in risk-only demo mode.",
+      "Layout.jsx: Admin role sees all nav items; requireRole() bypasses for Admin."
+    ],
+    "files": [
+      "grc-app/server.js",
+      "grc-app/schema_v67_issue_actions.sql",
+      "grc-app/frontend/src/pages/Layout.jsx"
+    ]
+  },
+  {
+    "version": "2.37.0",
+    "date": "18 Jul 2026",
+    "type": "Feature",
+    "user_bullets": [
+      "Risk Appetite: qualitative-only statements now supported (max residual score is optional).",
+      "Risk Appetite: form upgraded with notes field, approved-by role dropdown + approver name, approval date (past-only validation), tolerance band inputs, range slider for max score, live character counter, and pre-fill templates for breach action.",
+      "Risk Appetite: breach urgency auto-defaults from appetite level (Zero Tolerance/Low → Critical; Moderate/High → High) and is now required.",
+      "Risk Appetite: version history moved from modal to inline collapsible panel on each statement card (Admin/CRO only).",
+      "Incident Log: three-option register decision workflow — Link to Existing Risk, Create Risk in Register, or Dismiss with a reason note.",
+      "Incident Log: table now shows Register Decision column with linked risk UID badge.",
+      "Incident Log: 'Create Risk' navigates directly to Risk Register with the new risk form open; risk is auto-linked to the originating incident on save."
+    ],
+    "bullets": [
+      "schema_v65_ra_il_enhancements.sql: max_residual_score made nullable; notes, approved_by_role, approved_by_name, approval_date columns added to risk_appetite_statements; register_decision, linked_risk_id, dismiss_note columns added to incident_log.",
+      "migrate-all.js: v65 added to SCHEMA_FILES.",
+      "server.js: GET /api/risk-appetite — Viewer removed from requireRole.",
+      "server.js: GET /api/risk-appetite/summary — Viewer removed from requireRole.",
+      "server.js: GET /api/risk-appetite/:category — new endpoint returning current statement + full history.",
+      "server.js: POST /api/risk-appetite — accepts notes, approved_by_role, approved_by_name, approval_date; auto-defaults breach severity; validates approval_date not in future; validates required_breach_action min length; captures before/after diff in audit log.",
+      "server.js: GET /api/incidents — LEFT JOIN risks to return linked_risk_uid and linked_risk_detail.",
+      "server.js: PATCH /api/incidents/:id/link-risk — links incident to existing risk (Options 1 and 2).",
+      "server.js: PATCH /api/incidents/:id/dismiss — dismisses incident with required note (Option 3).",
+      "RiskAppetite.jsx: full rewrite — form adds notes, approved_by_role dropdown, approved_by_name, approval_date with max=today, tolerance band inputs, range slider, character counter, auto-default urgency, pre-fill templates; StatementCard inline history panel (Admin/CRO); heatmap overlay filters out qualitative-only statements.",
+      "IncidentLog.jsx: full rewrite — RiskPickerModal for Option 1, DismissModal for Option 3, action panel in expanded row, Register Decision column with badge, linked risk display in detail panel.",
+      "App.jsx: fromIncidentId state wired between IncidentLog and RiskRegister.",
+      "RiskRegister.jsx: fromIncidentId/onIncidentLinked props; auto-opens form when arrived from Incident Log; calls link-risk endpoint after creation."
+    ]
+  },
+  {
+    "version": "2.36.0",
+    "date": "18 Jul 2026",
+    "type": "Feature",
+    "user_bullets": [
+      "Risk Appetite: breach notification severity — choose Critical (immediate action) or High (action within 24 hours) on any appetite statement.",
+      "When a risk newly breaches the appetite threshold, an email is automatically sent to the CRO, risk owner, and relevant Risk Manager with the severity urgency and breach details.",
+      "Breach notification level shown as a colour-coded badge on the appetite statement card."
+    ],
+    "bullets": [
+      "schema_v64_breach_notification_severity.sql: breach_notification_severity TEXT CHECK ('Critical','High') column added to risk_appetite_statements.",
+      "migrate-all.js: v64 added to SCHEMA_FILES.",
+      "server.js: recalcAppetiteCategoryBreaches() now snapshots pre-update breach state, detects newly-breached risks, queries CRO/Consultant CRO users + risk owner + department-scoped Risk Managers, and calls sendEmail() for each recipient.",
+      "server.js: POST /api/risk-appetite — breach_notification_severity destructured from body, validated, and saved as 14th parameter in INSERT.",
+      "RiskAppetite.jsx: AppetiteForm — breach_notification_severity select dropdown added (None / Critical / High); breach action and severity in a shared form-row.",
+      "RiskAppetite.jsx: statement card — severity badge rendered with red (Critical) or amber (High) background when set."
+    ]
+  },
+  {
+    "version": "2.35.0",
+    "date": "18 Jul 2026",
+    "type": "Feature",
+    "user_bullets": [
+      "New Horizon Scanning module — log and track emerging risks across 6 categories (Regulatory, Geopolitical, Technology, Economic, Environmental, Social).",
+      "Radar matrix view plots active signals by time horizon × potential impact so high-priority items stand out at a glance.",
+      "AI scan button (CRO/Risk Manager): if an AI API key is configured, the AI scans external sources and drafts candidate signals for review. Drafts must be published before they enter the active list.",
+      "Signal detail panel, category badges, escalation highlighting, and convert-to-risk workflow.",
+      "Admin → AI Integration: configure an AI API key and provider for your organisation.",
+      "KRI Library: risk appetite statement can now be linked to a KRI — tolerance band shown in the form with the board ceiling for context.",
+      "KRI breaches now include the linked appetite category in auto-generated issue descriptions.",
+      "Risk Register: linked KRIs card now shows the appetite category chip alongside the KRI band.",
+      "Escalation engine: new kri_measurement_due trigger alerts when a KRI measurement is overdue."
+    ],
+    "bullets": [
+      "schema_v61_horizon_scanning.sql: new horizon_scans table (category, time_horizon, potential_impact, likelihood, status, is_deleted).",
+      "schema_v62_kri_appetite_link.sql: appetite_statement_id column added to kris; idx_kris_appetite_statement index.",
+      "schema_v63_ai_api_key.sql: ai_api_key and ai_api_provider columns added to companies; Draft status added to horizon_scans.status CHECK.",
+      "migrate-all.js: v61, v62, v63 added to SCHEMA_FILES.",
+      "server.js: GET/POST/PATCH/DELETE /api/horizon-scans; POST /api/horizon-scans/:id/convert; POST /api/horizon-scans/ai-draft.",
+      "server.js: GET/PATCH /api/admin/ai-settings (Admin only; key masked to last 4 chars).",
+      "server.js: risk-register KRI subquery now selects threshold_bands, threshold_source, appetite_statement_id + JOINs risk_appetite_statements — fixes band always null.",
+      "server.js: POST /api/kris — appetite_statement_id added as 16th parameter.",
+      "server.js: PATCH /api/kris/:id — appetite_statement_id in editable fields.",
+      "server.js: KRI measurement POST — now JOINs appetite_category; auto-issue description includes appetite_category on Red breach.",
+      "server.js: VALID_TRIGGERS includes kri_measurement_due; proactive kri_measurement_due escalation block added.",
+      "HorizonScanning.jsx: full rewrite — Signal list (Active/Drafts sub-tabs), Radar matrix, Add/Edit Signal form, Signal detail panel, AI scan toggle, KPI strip.",
+      "AiIntegration.jsx: new Admin page — configure provider name and API key, masked display, remove key.",
+      "KriLibrary.jsx: appetite_statement_id live select + board ceiling hint in NewKriForm and EditKriForm.",
+      "RiskRegister.jsx: linked KRIs card shows appetite category chip.",
+      "Layout.jsx: AI Integration nav item added to Admin section; Horizon Scanning in Strategic Intelligence group.",
+      "App.jsx: ai-integration route wired to AiIntegration component."
+    ]
+  },
+  {
+    "version": "2.28.0",
+    "date": "17 Jul 2026",
+    "type": "Feature",
+    "user_bullets": [
+      "Close Risk button now visible for CRO and Risk Manager directly on the risk register row (approved risks only).",
+      "Control Owner field now shows a dropdown of Risk Owner role users (falls back to text input if none exist).",
+      "Clicking a risk row now opens a full-screen detail view instead of expanding inline.",
+      "MyTasks risk rows are now clickable — opens the full risk detail with approve/close capability.",
+      "New Incident Log module added to the Risk section (log, track, and close operational incidents).",
+      "Scoring Methodology: currency code shown on Financial pillar; CRO can type shorthand like '5M' or '1.5B' when editing thresholds.",
+      "Risk form auto-saves as Draft in the background after 15 seconds of inactivity — 'Draft saved' indicator shown."
+    ],
+    "bullets": [
+      "RiskRegister.jsx: added closeRiskModal state + Close Risk button (CRO/Risk Manager/Consultant CRO, Approved risks only).",
+      "RiskRegister.jsx: Control Owner text input → dropdown from /api/users/risk-owners; falls back to text input if empty.",
+      "RiskRegister.jsx: row onClick now sets selectedRisk state → renders full-screen RiskDetail; removed inline expand rows.",
+      "RiskRegister.jsx: RiskDetail exported as named export for reuse in MyTasks.",
+      "MyTasks.jsx: imported RiskDetail; risk rows in all 4 queues are clickable; shows full risk detail with back button.",
+      "server.js: GET /api/risks/:id added (single-risk fetch, all operational roles).",
+      "server.js: GET /api/users/risk-owners added (returns active Risk Owner users, accessible to all operational roles).",
+      "IncidentLog.jsx: new page — CRUD for operational incidents with severity, status, dept, root cause, action taken.",
+      "server.js: /api/incidents GET/POST/PUT/DELETE routes added.",
+      "schema_v59_incident_log.sql: incident_log table created.",
+      "migrate-all.js: added schema_v59_incident_log.sql.",
+      "Layout.jsx: 'Incident Log' nav item added to Risk group.",
+      "App.jsx: incident-log route wired to IncidentLog component.",
+      "ScoringMethodology.jsx: currency state (default USD), editable by CRO; shown on Financial pillar header.",
+      "ScoringMethodology.jsx: parseFinancialShorthand() expands '5M'→'5 million', '1.5B'→'1.5 billion' on save.",
+      "server.js: POST /api/scoring-methodology now accepts and persists 'currency' field.",
+      "RiskRegister.jsx: auto-save draft — 15s debounce after key field changes; POST with save_as_draft:true; PATCH on updates.",
+      "server.js: POST /api/risks: save_as_draft:true skips score/rationale validation, sets initialStatus='Draft'.",
+      "server.js: PATCH /api/risks/:id: submit_draft:true transitions Draft→workflow status.",
+      "package.json bumped 2.27.3 → 2.28.0."
+    ],
+    "files": [
+      "grc-app/frontend/src/pages/RiskRegister.jsx",
+      "grc-app/frontend/src/pages/MyTasks.jsx",
+      "grc-app/frontend/src/pages/IncidentLog.jsx",
+      "grc-app/frontend/src/pages/ScoringMethodology.jsx",
+      "grc-app/frontend/src/pages/Layout.jsx",
+      "grc-app/frontend/src/App.jsx",
+      "grc-app/server.js",
+      "grc-app/schema_v59_incident_log.sql",
+      "grc-app/migrate-all.js",
+      "grc-app/package.json"
+    ]
+  },
+  {
+    "version": "2.27.3",
+    "date": "17 Jul 2026",
+    "type": "Bug Fix",
+    "user_bullets": [
+      "Admin can view the Risk Register but the '+ New Risk Assessment' button is now hidden for Admin (read-only access)."
+    ],
+    "bullets": [
+      "RiskRegister.jsx: '+ New Risk Assessment' button wrapped in role !== 'Admin' guard — button is hidden entirely for Admin.",
+      "package.json bumped 2.27.2 → 2.27.3."
+    ],
+    "files": [
+      "grc-app/frontend/src/pages/RiskRegister.jsx",
+      "grc-app/package.json"
+    ]
+  },
+  {
+    "version": "2.27.2",
+    "date": "17 Jul 2026",
+    "type": "Bug Fix",
+    "user_bullets": [
+      "Fixed: Admin can now fully view the Risk Register without errors (controls and KRI data now load correctly)."
+    ],
+    "bullets": [
+      "server.js GET /api/controls: added 'Admin' to requireRole guard.",
+      "server.js GET /api/kris: added 'Admin' to requireRole guard.",
+      "Both endpoints are called by the Risk Register on load — the missing Admin caused a 403 error banner even though the page itself rendered.",
+      "package.json bumped 2.27.1 → 2.27.2."
+    ],
+    "files": [
+      "grc-app/server.js",
+      "grc-app/package.json"
+    ]
+  },
+  {
+    "version": "2.27.1",
+    "date": "17 Jul 2026",
+    "type": "Bug Fix",
+    "user_bullets": [
+      "Admin users can now view the Risk Register."
+    ],
+    "bullets": [
+      "Layout.jsx: added 'Admin' to the roles array for the 'risks' nav item.",
+      "App.jsx: added role === 'Admin' to the page routing condition for the risk register.",
+      "AccessMatrix.jsx: 'View risks' row updated — Admin cell changed from N to F; note updated.",
+      "Backend unaffected — GET /api/risks already returns all risks for Admin (no dept scoping).",
+      "package.json bumped 2.27.0 → 2.27.1."
+    ],
+    "files": [
+      "grc-app/frontend/src/pages/Layout.jsx",
+      "grc-app/frontend/src/App.jsx",
+      "grc-app/frontend/src/pages/AccessMatrix.jsx",
+      "grc-app/package.json"
+    ]
+  },
+  {
+    "version": "2.27.0",
+    "date": "17 Jul 2026",
+    "type": "Feature / Bug Fix",
+    "user_bullets": [
+      "Fixed: Org Roles RACI page no longer throws an Internal Server Error.",
+      "Fixed: My Tasks no longer throws an Internal Server Error for any role.",
+      "Fixed: Newly-created departments now appear immediately when opening the new risk form.",
+      "Fixed: Business Unit selection no longer disappears after picking it in the new risk form.",
+      "Improved: Treatment Strategy is now shown on Step 2 (right after Inherent Risk Scoring) and the ISO label has been removed.",
+      "Simplified: Tolerance threshold, risk appetite, and risk velocity fields removed from the risk form.",
+      "Renamed: 'Owner Department' is now 'Control Owner' (free-text name/email) on the control row.",
+      "Added: Control Effectiveness dropdown (Not Tested / Effective / Partially Effective / Ineffective) per control row.",
+      "Added: A Mitigation Action Plan is now required when any control is Partially Effective or Ineffective."
+    ],
+    "bullets": [
+      "schema_v57_raci_matrix.sql: adds raci_matrix table to the standard migration chain (previously only applied via standalone migrate-raci-matrix.js).",
+      "schema_v58_raised_by_dept.sql: adds raised_by_dept TEXT column to issues table (previously only applied via standalone migrate-issues-raised-by-dept.js).",
+      "migrate-all.js: SCHEMA_FILES updated to include v56, v57, v58.",
+      "CascadingDeptSelector.jsx: useEffect no longer clears selectedBuId when dept is cleared — prevents BU from deselecting itself.",
+      "RiskRegister.jsx: Treatment Strategy + Accept rationale moved to Step 2 row; old Step 5 (tolerance, appetite, velocity, accept rationale) removed; steps renumbered 3–8.",
+      "RiskRegister.jsx: TREATMENT_STRATEGIES — removed '(ISO Standard Target)' suffix.",
+      "RiskRegister.jsx: control row owner_department dropdown replaced with owner text input; effectiveness select added after type.",
+      "RiskRegister.jsx: handleSubmit validates that a mitigation action exists when any control is Partially Effective or Ineffective.",
+      "RiskRegister.jsx: dept refresh on showForm open (useEffect watches showForm).",
+      "server.js: inline control INSERT now stores owner + last_test_result (effectiveness) instead of owner_department.",
+      "package.json bumped 2.26.9 → 2.27.0."
+    ],
+    "files": [
+      "grc-app/schema_v57_raci_matrix.sql",
+      "grc-app/schema_v58_raised_by_dept.sql",
+      "grc-app/migrate-all.js",
+      "grc-app/frontend/src/components/CascadingDeptSelector.jsx",
+      "grc-app/frontend/src/pages/RiskRegister.jsx",
+      "grc-app/server.js",
+      "grc-app/package.json"
+    ]
+  },
+  {
+    "version": "2.26.9",
+    "date": "17 Jul 2026",
+    "type": "Bug Fix",
+    "user_bullets": [
+      "Fixed: importing a risk register no longer fails with a database constraint error on every row. Controls are now saved successfully with their effectiveness values."
+    ],
+    "bullets": [
+      "controls_lib.last_test_result DB check constraint only allowed 'Not Tested' (schema_v3), but the entire application (import wizard default, test endpoint, ControlLibrary UI) uses 'Not yet tested'. All rows inserted by the import wizard failed with controls_lib_last_test_result_check violation.",
+      "schema_v56_fix_controls_lib_constraint.sql: DROP + re-ADD constraint to include both 'Not Tested' and 'Not yet tested', keeping all existing allowed values (Effective, Partially Effective, Ineffective).",
+      "package.json bumped 2.26.8 → 2.26.9."
+    ],
+    "files": [
+      "grc-app/schema_v56_fix_controls_lib_constraint.sql",
+      "grc-app/package.json"
+    ]
+  },
+  {
+    "version": "2.26.8",
+    "date": "17 Jul 2026",
+    "type": "Improvement",
+    "user_bullets": [
+      "Smart column mapping: the mapper now recognises columns like 'Inherent Risk Likelihood', 'Residual Risk Impact', 'Monitoring frequency', 'Control Description', 'Mitigation Decision', 'Action Plan...', and 'If an Action Plan, Define Responsibility' automatically — even when the column name contains extra words or punctuation.",
+      "Business Unit is now a mappable field. Files with both a 'Business Unit' and a 'Department' column will map each to the correct target independently.",
+      "Column matching no longer breaks on commas, newlines, or em-dashes in column headers."
+    ],
+    "bullets": [
+      "normalise(): upgraded from stripping specific chars to replace(/[^a-z0-9]+/g,'') — strips commas, newlines, em-dashes, and any other punctuation that appeared in Qatar Post column headers.",
+      "matchScore(): new 5-level scoring function — exact key/label (5), exact alias (4), long-alias prefix match (3), all key tokens present OR very-long alias contained (2), medium alias contained (1). Replaced simple 4-level function.",
+      "buildInitialMap(): switched from header-first to field-first iteration with matchScore scoring — ensures 'Department' (exact match, score 5) wins over 'Business Unit' (alias match, score 4) for the department field.",
+      "Added business_unit to FIELD_DEFS (risk_register + risks) — falls back to business_unit value if department is empty in importRisksRow backend.",
+      "Added missing aliases: monitoringfrequency on control_1_frequency; controldescription on control_1_name; mitigationdecision on treatment_strategy; mitigationdetails on treatment_plan_rationale; riskcateogorylevel2 (typo in Qatar Post file) on sub_category; defineresponsibility on action_1_owner.",
+      "package.json bumped 2.26.7 → 2.26.8."
+    ],
+    "files": [
+      "grc-app/frontend/src/pages/DataTools.jsx",
+      "grc-app/server.js",
+      "grc-app/package.json"
+    ]
+  },
+  {
+    "version": "2.26.7",
+    "date": "17 Jul 2026",
+    "type": "Fix",
+    "user_bullets": [
+      "Fixed: second (and third, etc.) controls from continuation rows now appear correctly in the column mapper after upload — the previous CSV parser broke on cell values containing line breaks, which is common in risk register control descriptions."
+    ],
+    "bullets": [
+      "parseCSVClient: complete rewrite as a proper RFC 4180 character-by-character parser. The old implementation split on \\n before parsing quotes, so multi-line quoted fields (control descriptions with embedded newlines) were torn into fake rows — corrupting all data after the first long description.",
+      "The new parser accumulates characters inside quotes including \\n, only splitting on \\n when outside a quoted field.",
+      "End-to-end verified against Draft Risk Register - Finance (1).xlsx: 5 risks parsed correctly, Control 2 (continuation row) fully merged with type/description/frequency/effectiveness fields.",
+      "package.json bumped 2.26.6 → 2.26.7."
+    ],
+    "files": [
+      "grc-app/frontend/src/pages/DataTools.jsx",
+      "grc-app/package.json"
+    ]
+  },
+  {
+    "version": "2.26.6",
+    "date": "17 Jul 2026",
+    "type": "Improvement",
+    "user_bullets": [
+      "Risk import mapper: 'Risk Cause' and 'Risk Consequence / Impact' removed as separate fields — replaced by a single 'Risk Statement' field that maps to the risk description, matching how risk registers are actually written."
+    ],
+    "bullets": [
+      "FIELD_DEFS risk_register + risks: removed risk_cause and risk_consequence entries; renamed risk_detail label to 'Risk Statement' with expanded aliases (riskstatement, statement, risknarrative, etc.).",
+      "Backend unchanged — risk_cause and risk_consequence DB columns remain and will be null for imported records (they are optional fields).",
+      "package.json bumped 2.26.5 → 2.26.6."
+    ],
+    "files": [
+      "grc-app/frontend/src/pages/DataTools.jsx",
+      "grc-app/package.json"
+    ]
+  },
+  {
+    "version": "2.26.5",
+    "date": "17 Jul 2026",
+    "type": "Fix",
+    "user_bullets": [
+      "Risk Register import: if multiple controls (or actions) are listed in a single cell separated by semicolons or line breaks, they are now split into separate control/action records automatically."
+    ],
+    "bullets": [
+      "importRiskRegisterRow (server.js): detect newline or semicolon delimiters in control_1_name and expand into control_2_name … control_5_name slots before the insert loop. Same logic applied to action_1_description → action_2/3.",
+      "Attributes (type, owner, frequency, effectiveness) for split controls inherit system defaults (Preventive, Manual, Quarterly, Not yet tested) — user can edit after import.",
+      "package.json bumped 2.26.4 → 2.26.5."
+    ],
+    "files": [
+      "grc-app/server.js",
+      "grc-app/package.json"
+    ]
+  },
+  {
+    "version": "2.26.4",
+    "date": "17 Jul 2026",
+    "type": "Fix",
+    "user_bullets": [
+      "Risk Register import: continuation rows (extra controls in separate spreadsheet rows) now auto-map correctly in the column mapper — columns like \"Control Type_2\" and \"Monitoring Frequency_2\" are automatically recognised."
+    ],
+    "bullets": [
+      "FIELD_DEFS.risk_register: added numbered-suffix aliases for control_2 through control_5 fields (name, type, automation, owner, frequency, effectiveness) so merged continuation-row columns (e.g. 'Control Type_2' → normalised 'controltype2') are correctly auto-suggested in StepMap.",
+      "Added missing control_3_automation, control_4_automation, control_5_automation field definitions.",
+      "Fixed alias ordering — 'controlautomation2' (normalised from 'Control Automation_2') now correctly matches control_2_automation instead of the transposed form.",
+      "package.json bumped 2.26.3 → 2.26.4."
+    ],
+    "files": [
+      "grc-app/frontend/src/pages/DataTools.jsx",
+      "grc-app/package.json"
+    ]
+  },
+  {
+    "version": "2.26.0",
+    "date": "17 Jul 2026",
+    "type": "Feature",
+    "user_bullets": [
+      "New: Smart Import Wizard — upload your own file in any format (CSV or Excel), map your columns to our fields in a visual UI, preview every row before anything is saved, then confirm to import.",
+      "Auto-matching: the wizard guesses which of your columns maps to our fields using fuzzy matching — you only need to correct mismatches.",
+      "Dry-run preview: all rows are validated against the system before import; errors are shown per-row and will be skipped on final import so valid rows always get through.",
+      "Excel support: .xlsx and .xls files are automatically converted to CSV so you don't need to export to CSV first.",
+      "ISO 31000 compliant label added to the Download Risks Template button."
+    ],
+    "bullets": [
+      "DataTools.jsx: full rewrite — 4-step wizard (Upload → Map Columns → Preview → Done) replacing the old single-step import.",
+      "FIELD_DEFS: per-module field definitions with required flag and aliases arrays for fuzzy matching (risks, controls, policies, obligations).",
+      "normalise() + autoSuggest(): normalise headers to lowercase stripped strings and match against aliases.",
+      "buildInitialMap(): auto-suggests a columnMap from parsed headers on entering step 2.",
+      "remapToCSV(): converts parsed rows + columnMap into a remapped CSV using our field names for the backend.",
+      "parseCSVClient(): client-side CSV parser supporting quoted fields and commas inside values.",
+      "xlsxToCsv(): converts uploaded .xlsx/.xls to CSV using read-excel-file (already in frontend deps).",
+      "StepUpload / StepMap / StepPreview / StepDone: step components with StepBar progress indicator.",
+      "server.js POST /api/import/:module: dry_run support with BEGIN/COMMIT and per-row SAVEPOINTs — ROLLBACK on dry_run=true, audit only logged on real import.",
+      "package.json bumped 2.25.3 → 2.26.0."
+    ],
+    "files": [
+      "grc-app/frontend/src/pages/DataTools.jsx",
+      "grc-app/server.js",
+      "grc-app/package.json"
+    ]
+  },
+  {
+    "version": "2.25.3",
+    "date": "17 Jul 2026",
+    "type": "Bug Fix",
+    "user_bullets": [
+      "Fixed: downloading CSV templates (Risks, Controls, Policies, Obligations) and all exports now work correctly.",
+      "Fixed: the 'e is not a function' error on the Import / Export page is resolved."
+    ],
+    "bullets": [
+      "api.js getBlob: added credentials: 'include' so the session cookie is sent with template/export fetch requests — without it the server returned 401 and the download failed.",
+      "api.js getBlob: changed getToken() to getToken?.() to match the rest of the api client and avoid TypeError if getToken is undefined.",
+      "package.json bumped 2.25.2 → 2.25.3."
+    ],
+    "files": [
+      "grc-app/frontend/src/api.js",
+      "grc-app/package.json"
+    ]
+  },
+  {
+    "version": "2.25.2",
+    "date": "17 Jul 2026",
+    "type": "Enhancement",
+    "user_bullets": [
+      "New: Admin and CRO can now add escalation rules via the + Add Rule button on the Escalation Rules page.",
+      "CRO and Consultant CRO now have access to the Escalation Rules page (previously Admin-only).",
+      "The Add Rule button only appears when there are trigger types not yet configured; once all 5 are covered it disappears."
+    ],
+    "bullets": [
+      "server.js: POST /api/escalation-rules added (Admin, CRO, Consultant CRO); GET and PATCH guards opened to CRO and Consultant CRO.",
+      "EscalationRules.jsx: AddRuleModal component added; + Add Rule button shown when availableTriggers.length > 0; empty-state message added.",
+      "Layout.jsx: escalation-rules nav item roles extended to include CRO and Consultant CRO.",
+      "App.jsx: escalation-rules route extended to isCRO.",
+      "package.json bumped 2.25.1 → 2.25.2."
+    ],
+    "files": [
+      "grc-app/server.js",
+      "grc-app/frontend/src/pages/EscalationRules.jsx",
+      "grc-app/frontend/src/pages/Layout.jsx",
+      "grc-app/frontend/src/App.jsx",
+      "grc-app/package.json"
+    ]
+  },
+  {
+    "version": "2.25.1",
+    "date": "17 Jul 2026",
+    "type": "Enhancement",
+    "user_bullets": [
+      "Improved: Access Matrix now shows action-level permissions (View, Create, Edit, Approve, etc.) per role — not just module access.",
+      "Edit access now clearly shows scope: 'Dept only' for Risk Manager and 'Own only' for Risk Champion.",
+      "Info tooltips explain each action where the rules are nuanced (e.g., the 3-stage risk approval workflow)."
+    ],
+    "bullets": [
+      "AccessMatrix.jsx: rebuilt with action-level granularity across 10 module sections; each row is a specific action (not just a page), with Full / Dept / Own / No-access cell types.",
+      "Colour-coded badges: green = Full, amber = Dept/Own scoped, grey = no access.",
+      "Hover tooltips (InfoTip component) on rows with complex rules.",
+      "Your-role column highlighting preserved.",
+      "package.json bumped 2.25.0 → 2.25.1."
+    ],
+    "files": [
+      "grc-app/frontend/src/pages/AccessMatrix.jsx",
+      "grc-app/package.json"
+    ]
+  },
+  {
+    "version": "2.25.0",
+    "date": "17 Jul 2026",
+    "type": "Enhancement",
+    "user_bullets": [
+      "New: Access Matrix page shows which modules every role can access — visible to Admin and CRO roles.",
+      "The matrix is grouped by module category and highlights your own role column."
+    ],
+    "bullets": [
+      "AccessMatrix.jsx: new read-only page with a colour-coded table of all 7 roles × all modules, grouped by section.",
+      "Layout.jsx: 'Access Matrix' nav item added to Admin group, visible to Admin, CRO, and Consultant CRO.",
+      "App.jsx: route added for 'access-matrix' page (Admin and CRO roles).",
+      "package.json bumped 2.24.7 → 2.25.0."
+    ],
+    "files": [
+      "grc-app/frontend/src/pages/AccessMatrix.jsx",
+      "grc-app/frontend/src/pages/Layout.jsx",
+      "grc-app/frontend/src/App.jsx",
+      "grc-app/package.json"
+    ]
+  },
+  {
+    "version": "2.24.7",
+    "date": "17 Jul 2026",
+    "type": "Bug Fix",
+    "user_bullets": [
+      "Fixed: the temporary password is now always shown on screen when a new user is added — regardless of whether email is configured.",
+      "Fixed: ghost users left over from previously failed attempts are now recovered — their password is reset and the temp password is shown correctly.",
+      "Improved: when a user is added to a company and already has an active account elsewhere, the message now correctly says 'log in with existing credentials' instead of 'email sent'."
+    ],
+    "bullets": [
+      "server.js: removed `!emailSent &&` gate from the tempPassword response field — temp password is now always returned to the admin for new users.",
+      "server.js: added ghost user detection — if a user exists in the users table but has no user_companies rows, their password is reset and a fresh temp password is generated.",
+      "UserManagement.jsx: TempPasswordModal now accepts emailSent prop and shows contextual message (email also sent vs. email not configured).",
+      "UserManagement.jsx: fallback message when no tempPassword now correctly says 'use existing credentials' instead of 'welcome email sent'.",
+      "package.json bumped 2.24.6 → 2.24.7."
+    ],
+    "files": [
+      "grc-app/server.js",
+      "grc-app/frontend/src/pages/UserManagement.jsx",
+      "grc-app/package.json"
+    ]
+  },
+  {
+    "version": "2.24.6",
+    "date": "17 Jul 2026",
+    "type": "Bug Fix",
+    "user_bullets": [
+      "Fixed: adding a user as Risk Owner or Risk Manager no longer causes an internal server error on retry.",
+      "Fixed: when re-adding a user after a failed first attempt, the temporary password is now correctly generated and displayed."
+    ],
+    "bullets": [
+      "server.js: wrapped users INSERT + password_history INSERT + user_companies INSERT in a single DB transaction. If user_companies fails (e.g. role constraint violation), the users row is rolled back atomically — eliminating the ghost user that caused retries to skip temp password generation.",
+      "server.js: moved explicit temporary_password policy validation before the transaction open to allow clean early return without an open transaction.",
+      "package.json bumped 2.24.5 → 2.24.6."
+    ],
+    "files": [
+      "grc-app/server.js",
+      "grc-app/package.json"
+    ]
+  },
+  {
+    "version": "2.24.5",
+    "date": "17 Jul 2026",
+    "type": "Enhancement",
+    "schema": "schema_v54_rename_roles.sql — renames 'Manager' → 'Risk Manager' and 'Approver' → 'Risk Owner' in user_companies and updates the role CHECK constraint",
+    "user_bullets": [
+      "The 'Manager' role has been renamed to 'Risk Manager' throughout the application.",
+      "The 'Approver' role has been renamed to 'Risk Owner' throughout the application.",
+      "All existing users with these roles are automatically updated — no action needed."
+    ],
+    "bullets": [
+      "schema_v54_rename_roles.sql: drops old role CHECK constraint, renames existing DB rows, adds updated constraint with Risk Manager and Risk Owner.",
+      "migrate-all.js: schema_v54 registered.",
+      "server.js: replace_all 'Manager' → 'Risk Manager', 'Approver' → 'Risk Owner' across all requireRole guards, SQL WHERE clauses, role arrays, error messages, and comments.",
+      "Layout.jsx, App.jsx, UserManagement.jsx, RiskRegister.jsx, OrgRoles.jsx, DepartmentField.jsx, TopBar.jsx, EvidenceAttachments.jsx, ComplianceObligations.jsx, ControlLibrary.jsx, KriLibrary.jsx, PolicyRepository.jsx, TrainingLibrary.jsx: role strings updated.",
+      "test-suite.js, test-bcm.js, test-suite-extended.js, test-routing-audit.js: role strings updated.",
+      "package.json bumped 2.24.4 → 2.24.5."
+    ],
+    "files": [
+      "schema_v54_rename_roles.sql",
+      "migrate-all.js",
+      "server.js",
+      "frontend/src/pages/Layout.jsx",
+      "frontend/src/App.jsx",
+      "frontend/src/pages/UserManagement.jsx",
+      "frontend/src/pages/RiskRegister.jsx",
+      "frontend/src/pages/OrgRoles.jsx",
+      "frontend/src/components/DepartmentField.jsx",
+      "frontend/src/components/TopBar.jsx",
+      "frontend/src/components/EvidenceAttachments.jsx",
+      "frontend/src/pages/ComplianceObligations.jsx",
+      "frontend/src/pages/ControlLibrary.jsx",
+      "frontend/src/pages/KriLibrary.jsx",
+      "frontend/src/pages/PolicyRepository.jsx",
+      "frontend/src/pages/TrainingLibrary.jsx",
+      "package.json (2.24.4 → 2.24.5)"
+    ]
+  },
+  {
+    "version": "2.24.4",
+    "date": "17 Jul 2026",
+    "type": "Fix",
+    "schema": "schema_v53_company_address.sql — adds address column to companies table",
+    "user_bullets": [
+      "Company code is now auto-generated from the company name as you type — no need to invent one manually.",
+      "Added an Address field to the company creation and company profile forms.",
+      "The warning when switching to Business Units mode is now in plain language.",
+      "Subsidiaries now have an Edit button — click it to update name, industry, country, address, and access settings without deleting and recreating.",
+      "'Group Access Ceiling' has been renamed 'Parent Company Access'; dropdown options are now Consolidated View, Entity Level View, and Full Access.",
+      "Duplicate company names in the same country are now blocked with a clear error message."
+    ],
+    "bullets": [
+      "Companies.jsx: suggestCode() auto-fills Company Code from name; address field added to all three forms (standalone, subsidiary, profile).",
+      "Companies.jsx: BUG-01 — BU mode warning rewritten in plain language.",
+      "Companies.jsx: BUG-03 — 'Group Access Ceiling' → 'Parent Company Access'; dropdown labels updated.",
+      "Companies.jsx: BUG-04 — editingSub state + saveEditSub + Edit button + modal for subsidiaries.",
+      "server.js: PUT /api/companies/:id extended to accept full profile fields (industry, company_type, country, regulatory_body, fiscal_year_end, description, address).",
+      "server.js: address field added to POST /api/companies/standalone, POST /api/companies, GET + PUT /api/companies/current/profile.",
+      "server.js: BUG-06 — duplicate name+country check added to both POST company routes; returns 409 with clear message.",
+      "schema_v53_company_address.sql: ALTER TABLE companies ADD COLUMN IF NOT EXISTS address TEXT.",
+      "migrate-all.js: schema_v53 registered.",
+      "package.json bumped 2.24.3 → 2.24.4."
+    ],
+    "files": [
+      "frontend/src/pages/Companies.jsx",
+      "server.js",
+      "schema_v53_company_address.sql",
+      "migrate-all.js",
+      "package.json (2.24.3 → 2.24.4)"
+    ]
+  },
+  {
+    "version": "2.24.3",
+    "date": "17 Jul 2026",
+    "type": "Fix",
+    "schema": "No schema changes",
+    "user_bullets": [
+      "Enabling Business Units mode now takes effect immediately — the Business Units page shows the Add BU form straight away without requiring a logout or page reload."
+    ],
+    "bullets": [
+      "Companies.jsx: added refreshMe() call after saveProfile succeeds so the session (and thus activeCompany.has_business_units) is updated in real time.",
+      "package.json bumped 2.24.2 → 2.24.3."
+    ],
+    "files": [
+      "frontend/src/pages/Companies.jsx",
+      "package.json (2.24.2 → 2.24.3)"
+    ]
+  },
+  {
+    "version": "2.24.2",
+    "date": "17 Jul 2026",
+    "type": "Fix",
+    "schema": "No schema changes",
+    "user_bullets": [
+      "When a new user is created and email is not configured, the temporary password is now displayed on-screen in a modal so the admin can copy and share it directly."
+    ],
+    "bullets": [
+      "server.js: user-create endpoint now includes tempPassword in the response when emailSent is false.",
+      "UserManagement.jsx: added TempPasswordModal component; AddUserForm shows it after creation when tempPassword is returned, blocking navigation until the admin acknowledges."
+    ],
+    "files": [
+      "server.js (user-create response)",
+      "frontend/src/pages/UserManagement.jsx",
+      "package.json (2.24.1 → 2.24.2)"
+    ]
+  },
+  {
+    "version": "2.24.1",
+    "date": "17 Jul 2026",
+    "type": "Fix",
+    "schema": "No schema changes",
+    "user_bullets": [
+      "Single-session enforcement now works in real time: if you log in on a second device, the first device is signed out within 30 seconds instead of waiting for the next page action.",
+      "Forgot password no longer requires email to be configured. Enter your email and a temporary password is generated and shown on screen — log in with it and you'll be prompted to set a new one immediately."
+    ],
+    "bullets": [
+      "AuthContext.jsx: added 30-second heartbeat (setInterval on /api/auth/me) so Device A detects its invalidated session promptly after Device B logs in.",
+      "server.js forgot-password: replaced email-based token flow with inline temp-password generation. Sets must_change_password = true on the account and returns the plaintext temp password in the response.",
+      "ForgotPassword.jsx: replaced 'Check your email' UI with a temp-password display card including a Copy button. Shows 'No account found' for unknown emails.",
+      "package.json bumped 2.24.0 → 2.24.1."
+    ],
+    "files": [
+      "frontend/src/AuthContext.jsx",
+      "server.js (forgot-password endpoint)",
+      "frontend/src/pages/ForgotPassword.jsx",
+      "package.json (2.24.0 → 2.24.1)"
+    ]
+  },
+  {
+    "version": "2.24.0",
+    "date": "17 Jul 2026",
+    "type": "Feature",
+    "schema": "No schema changes",
+    "user_bullets": [
+      "Full Arabic / English bilingual UI: every page title, subtitle, button, column header, form label, status badge, empty state, and placeholder now switches to Arabic when the EN/عر toggle is activated.",
+      "Translations cover all modules: Risk Register, Control Library, KRI Library & Register, Issues & Actions, Compliance Obligations, Compliance Calendar, Policy Repository, Audit Log, Glossary, Import/Export, Training Videos, and all Admin pages.",
+      "Arabic text is rendered right-to-left in the main content area; the sidebar always stays left-to-right for navigation consistency."
+    ],
+    "bullets": [
+      "translations.js: expanded to 200+ keys covering all pages (audit log tabs, filter labels, column headers, Glossary form, DataTools sections, and per-page titles/subtitles).",
+      "AuditLog.jsx: column headers, tab labels, filter placeholder, clear-filters button, loading and empty states all use t().",
+      "Glossary.jsx: title, subtitle, search placeholder, add-term form, column headers, custom badge, and no-match state translated.",
+      "DataTools.jsx: title, subtitle, Bulk Import section, Export Data section, Standard Controls card, module label, and button labels translated.",
+      "PolicyRepository.jsx, ComplianceCalendar.jsx, TrainingLibrary.jsx, RiskRegister.jsx: page titles and subtitles now use t().",
+      "package.json bumped from 2.23.1 → 2.24.0."
+    ],
+    "files": [
+      "frontend/src/translations.js (expanded)",
+      "frontend/src/pages/AuditLog.jsx",
+      "frontend/src/pages/Glossary.jsx",
+      "frontend/src/pages/DataTools.jsx",
+      "frontend/src/pages/PolicyRepository.jsx",
+      "frontend/src/pages/ComplianceCalendar.jsx",
+      "frontend/src/pages/TrainingLibrary.jsx",
+      "frontend/src/pages/RiskRegister.jsx",
+      "package.json (2.23.1 → 2.24.0)"
+    ]
+  },
+  {
+    "version": "2.23.1",
+    "date": "17 Jul 2026",
+    "type": "Security",
+    "schema": "No schema changes",
+    "user_bullets": [
+      "Security: logging in from a new device now automatically ends any existing session on another device. Only one active session per user is permitted at a time."
+    ],
+    "bullets": [
+      "auth.js createSession(): added DELETE FROM sessions WHERE user_id before INSERT to enforce single-session-per-user. Prevents a compromised credential from maintaining a silent parallel session alongside the legitimate user."
+    ],
+    "files": [
+      "auth.js (single-session enforcement in createSession)",
+      "package.json (2.23.0 → 2.23.1)"
+    ]
+  },
+  {
+    "version": "2.23.0",
+    "date": "17 Jul 2026",
+    "type": "New Feature",
+    "schema": "No schema changes",
+    "user_bullets": [
+      "New: Arabic/English language toggle added to the navigation sidebar footer (alongside Help and About). Click 'عر' to switch to Arabic; click 'EN' to switch back. Preference is remembered across sessions.",
+      "Arabic mode: all navigation labels, section headings, and the Log Out button display in Arabic. Main content area switches to right-to-left (RTL) layout. The sidebar and logout button remain centered and visually stable in both languages."
+    ],
+    "bullets": [
+      "Created contexts/LanguageContext.jsx: LanguageProvider + useLanguage hook. Language preference persisted in localStorage under 'grc_lang'.",
+      "Layout.jsx: added AR_LABELS and AR_GROUPS translation maps for all 26 nav items and 5 section headings. Language toggle button (EN/عر) added to Help/About row in sidebar footer. main-content div gets dir=rtl when Arabic is active. Logout button label switches to 'تسجيل الخروج' in Arabic.",
+      "main.jsx: LanguageProvider wraps AuthProvider at the root so all components can read lang via useLanguage()."
+    ],
+    "files": [
+      "frontend/src/contexts/LanguageContext.jsx (new)",
+      "frontend/src/pages/Layout.jsx (toggle + translations + RTL)",
+      "frontend/src/main.jsx (LanguageProvider root wrap)",
+      "package.json (2.22.2 → 2.23.0)"
+    ]
+  },
+  {
+    "version": "2.22.2",
+    "date": "17 Jul 2026",
+    "type": "Bug Fix",
+    "schema": "No schema changes",
+    "user_bullets": [
+      "Fixed: Scoring Methodology page crashed to a blank white screen after loading. Root cause was a removed API endpoint (/api/categories) being replaced by the SPA catch-all, returning null to the component and crashing the render.",
+      "Admin sidebar reordered to match the natural company setup sequence (Branding first, Storage & Health last). Utility items moved to the bottom."
+    ],
+    "bullets": [
+      "ScoringMethodology.jsx: replaced removed /api/categories call with /api/risk-taxonomy. Updated category rendering to use new {id, name} object format. Removed add/delete UI (now Admin-only in Risk Configuration).",
+      "Layout.jsx: Admin nav group reordered by setup sequence. Ungrouped utility items moved after Admin group."
+    ],
+    "files": [
+      "frontend/src/pages/ScoringMethodology.jsx (blank screen crash fix)",
+      "frontend/src/pages/Layout.jsx (nav order)",
+      "package.json (2.22.1 → 2.22.2)"
+    ]
+  },
+  {
+    "version": "2.22.1",
+    "date": "17 Jul 2026",
+    "type": "UX",
+    "schema": "No schema changes",
+    "user_bullets": [
+      "Admin sidebar reordered to match the natural company setup sequence: Branding → Company Structure → Business Units → Departments → Users & Access → Risk Configuration → Escalation Rules → Email Settings → Storage & Health.",
+      "Utility items (Glossary, Training Videos, Audit Log, Import / Export) moved to the bottom of the sidebar for Admin users so primary setup tasks are always visible first."
+    ],
+    "bullets": [
+      "Layout.jsx: Admin nav group reordered to reflect setup sequence (Branding first, Storage & Health last).",
+      "Layout.jsx: Ungrouped utility items (glossary, training, audit, data-tools) moved after the Admin group so they appear at the bottom for Admin role."
+    ],
+    "files": [
+      "frontend/src/pages/Layout.jsx (nav item order)",
+      "package.json (2.22.0 → 2.22.1)"
+    ]
+  },
+  {
+    "version": "2.22.0",
+    "date": "4 Jul 2026",
+    "type": "Security",
+    "schema": "No schema changes",
+    "user_bullets": [
+      "Security: Adding an existing user to a company no longer resets their password — their existing credentials are preserved and they can log in without any action required.",
+      "Security: Evidence filenames are now validated against a stricter character set that explicitly blocks control characters (CR, LF, NUL) in addition to path separators.",
+      "Security: Risk sub-category deletion now enforces company ownership at the database level on the final DELETE statement (defense-in-depth)."
+    ],
+    "bullets": [
+      "NEW-01 (MEDIUM, Backend): POST /api/users — when a globally-existing user is re-added to a company, password is no longer reset. Only the user_companies link is created. Prevents any Admin from disrupting another user's access by adding their email to a different company.",
+      "NEW-02 (LOW, Backend): Evidence filename regex in validate.js updated from /^[^/\\\\:*?\"<>|]+$/ to /^[^/\\\\\\r\\n\\0:*?\"<>|]+$/ — explicitly excludes CR, LF, and NUL characters.",
+      "NEW-03 (INFO, Backend): DELETE /api/risk-sub-categories/:id — final DELETE query now scoped to company_id via subquery for defense-in-depth (ownership was already verified by preceding SELECT)."
+    ],
+    "files": [
+      "server.js (NEW-01: POST /api/users; NEW-03: DELETE /api/risk-sub-categories/:id)",
+      "validate.js (NEW-02: evidence filename regex)",
+      "package.json (2.21.0 → 2.22.0)"
+    ]
+  },
+  {
+    "version": "2.21.0",
+    "date": "4 Jul 2026",
+    "type": "Bug Fix",
+    "schema": "No schema changes",
+    "user_bullets": [
+      "Fix: Seed Controls Wizard — standard controls belonging to a 'skipped' support function are now correctly excluded (they were silently seeded under the wrong department name).",
+      "Fix: Running the wizard a second time on the same company now returns a clear error instead of creating duplicate controls.",
+      "Fix: After applying on a company with no existing register, the wizard now advances to the Done screen correctly (previously both the Confirm and Done panels could appear at the same time)."
+    ],
+    "bullets": [
+      "SC-01 (MEDIUM, Backend): Empty dept-map entry no longer falls back to the seed function name — controls for skipped functions are now skipped.",
+      "SC-02 (LOW, Backend): Added idempotency guard on /api/seed-controls/apply — returns HTTP 409 if standard controls have already been seeded for this company.",
+      "SC-03 (LOW, Backend): /api/seed-controls/preview now enforces the same 1000-row limit as the main controls import route.",
+      "SC-05 (INFO, Backend): logAudit call moved to after COMMIT so audit entries only appear for committed data.",
+      "SC-06 (MEDIUM, Frontend): setStep(4) always advances to Done after Apply — removed the stale dual-render path that caused StepConfirm and StepDone to render simultaneously on the fresh-company flow."
+    ],
+    "files": [
+      "server.js (seed-controls routes: SC-01, SC-02, SC-03, SC-05)",
+      "frontend/src/components/SeedControlsWizard.jsx (SC-06)",
+      "package.json (2.20.0 → 2.21.0)"
+    ]
+  },
+  {
+    "version": "2.20.0",
+    "date": "3 Jul 2026",
+    "type": "Feature",
+    "schema": "No schema changes",
+    "user_bullets": [
+      "New: Standard Controls Seeding Wizard — seed 55 Certitude-approved controls across Finance, HR, IT, Legal & Compliance, Procurement, Risk Management, and Facilities in a few clicks during company onboarding.",
+      "The wizard handles companies with no existing register (seed directly) and companies with a pre-existing control register (upload, review duplicates side-by-side, choose which to keep, then seed).",
+      "Duplicate detection uses name-similarity matching — flagged pairs are shown side-by-side so the Admin can decide to keep the standard control or their existing one.",
+      "All four optional fields (automation, testing frequency, evidence required, framework reference) are left blank for the company to complete — nothing is assumed.",
+      "Accessible from Import / Export → Standard Controls button. Admin role only."
+    ],
+    "bullets": [
+      "seed-controls-data.js: New data module containing all 55 approved standard controls across 7 support functions.",
+      "server.js: GET /api/seed-controls (returns full list), POST /api/seed-controls/preview (parse CSV + Jaccard similarity analysis), POST /api/seed-controls/apply (seed selected + import client controls with mapping).",
+      "frontend/src/components/SeedControlsWizard.jsx: New multi-step wizard — approach selection, department mapping, duplicate review (side-by-side with department filter), confirm & apply, done summary.",
+      "frontend/src/pages/DataTools.jsx: Added Standard Controls card with Seed Standard Controls button (Admin only); imports SeedControlsWizard."
+    ],
+    "files": [
+      "seed-controls-data.js (new)",
+      "server.js (3 new routes)",
+      "frontend/src/components/SeedControlsWizard.jsx (new)",
+      "frontend/src/pages/DataTools.jsx",
+      "package.json (2.19.0 → 2.20.0)"
+    ]
+  },
+  {
+    "version": "2.19.0",
+    "date": "3 Jul 2026",
+    "type": "Security / Code Quality / BCM Cleanup",
+    "schema": "No schema changes",
+    "user_bullets": [
+      "Fixed: training videos now correctly show the full library for your role — previously all users saw only the Risk Champion tier regardless of actual role.",
+      "Fixed: Viewers no longer have access to the company-wide audit log.",
+      "Fixed: deleting a BCM process now correctly rejects attempts where the RTO exceeds the MTPD, even when the two values are in different time units."
+    ],
+    "bullets": [
+      "SEC-06: Fixed req.company_role typo in 4 training route handlers — now correctly reads req.company.role. All roles now receive the correct tier of training videos.",
+      "SEC-07: Error handler gate changed from === 'staging' to !== 'production' — internal error details can no longer leak if a staging build is deployed to production.",
+      "SEC-08: _debug_cro gate hardened with the same !== 'production' pattern.",
+      "SEC-09: Removed user email (PII) from console.log in user-creation flow — logs now reference user ID only.",
+      "BCM-01: Deleted 7 orphaned BCM page files (BcmDashboard, BcmProcessRegister, BcmBcpLibrary, BcmTestingLog, BcmScenarioLibrary, BcmDependencyRegister, BcmActivationLog) — BCM is disconnected from the frontend; these were dead code in the Vite bundle.",
+      "RBAC-01: Company creation via /api/companies/standalone now requires is_consultant AND is_super_admin — is_consultant alone is no longer sufficient.",
+      "RBAC-02: Viewer role removed from /api/audit-log requireRole guard — audit log now requires Admin, Manager, Risk Champion, Approver, CRO, or Consultant CRO.",
+      "AUTH-04: LOCKOUT_MINUTES now passed as a query parameter (make_interval(mins => $2)) instead of string-interpolated into SQL.",
+      "OPS-01: SESSION_TIMEOUT_MINUTES corrected to 10 in deploy-staging.sh — now matches production default (was 30, 3× too long).",
+      "DEPLOY-01: Staging test API key no longer retrieved and printed to terminal — deploy output now shows the Secret Manager key name instead.",
+      "WS-01: BCM process RTO < MTPD validation now normalizes both values to minutes before comparing — cross-unit pairs (e.g. 72 hours vs 1 day) are now correctly caught."
+    ],
+    "files": [
+      "server.js (SEC-06, SEC-07, SEC-08, SEC-09, RBAC-01, RBAC-02, WS-01)",
+      "auth.js (AUTH-04)",
+      "deploy-staging.sh (OPS-01, DEPLOY-01)",
+      "frontend/src/pages/ (BCM-01: 7 files deleted)",
+      "package.json (2.18.0 → 2.19.0)"
+    ]
+  },
+  {
+    "version": "2.18.0",
+    "date": "3 Jul 2026",
+    "type": "Code Quality / Housekeeping",
+    "schema": "v52 — is_deleted column on bcm_activations",
+    "user_bullets": [
+      "Internal: BCM Activations now use soft-delete, consistent with all other BCM records — data is never permanently lost on deletion.",
+      "Internal: legacy duplicate API routes removed; docx dependency correctly available in production builds."
+    ],
+    "bullets": [
+      "A-01: docx moved from devDependencies to dependencies — now correctly installed in Cloud Run production builds.",
+      "A-03: schema_v52 adds is_deleted to bcm_activations. DELETE endpoint converted from hard DELETE to soft UPDATE SET is_deleted=true. GET endpoints now filter WHERE is_deleted=false. BCM tables are now uniformly soft-deleted.",
+      "DC-04: Legacy /api/categories (GET/POST/DELETE) routes removed — fully superseded by /api/risk-taxonomy and /api/risk-sub-categories (Admin-managed, structured, with IDs). No frontend reference to /api/categories existed."
+    ],
+    "files": [
+      "schema_v52_bcm_activations_soft_delete.sql (new)",
+      "migrate-all.js (v52 added)",
+      "server.js (soft-delete on activations, legacy /api/categories removed)",
+      "package.json (docx moved to dependencies, 2.17.0 → 2.18.0)"
+    ]
+  },
+  {
+    "version": "2.17.0",
+    "date": "3 Jul 2026",
+    "type": "Security / Data Integrity / Test Coverage",
+    "schema": "v51 — role CHECK constraint updated to include all current roles",
+    "user_bullets": [
+      "Fixed: uploading training videos with unusual filenames (including path traversal attempts) is now safely handled.",
+      "Fixed: deleting a risk category is now blocked if any of its sub-categories are in use by risks.",
+      "Fixed: the database role constraint now correctly reflects all user roles in the system."
+    ],
+    "bullets": [
+      "SEC-05: Training upload-url endpoint now sanitizes filename using path.basename() — prevents path traversal via malformed filenames.",
+      "D-04: DELETE /api/risk-categories/:id now checks whether any risks reference sub-categories belonging to the category before allowing deletion (409 if in use).",
+      "S-04: schema_v51 drops the stale role CHECK constraint (only listed Admin/Manager/Viewer) and replaces it with the full current vocabulary: Admin, Manager, Viewer, Risk Champion, CRO, Consultant CRO, Approver.",
+      "T-02: test-bcm.js RBAC matrix extended with Consultant CRO — verifies 403 on all BCM GET and POST endpoints.",
+      "T-03: testAuditEdgeCases() in test-suite.js updated — link-risk test now explicitly documented as the T-03 cross-company isolation test.",
+      "E-04: refreshBcpTestSummary transactional pattern confirmed intentional — no code change needed."
+    ],
+    "files": [
+      "schema_v51_role_constraint.sql (new)",
+      "migrate-all.js (v51 added)",
+      "server.js (SEC-05 filename sanitization, D-04 sub-category in-use check)",
+      "test-bcm.js (Consultant CRO user in setup/RBAC/cleanup)",
+      "test-suite.js (T-03 annotation on link-risk test)",
+      "package.json (2.16.0 → 2.17.0)"
+    ]
+  },
+  {
+    "version": "2.16.0",
+    "date": "3 Jul 2026",
+    "type": "Security / Data Integrity",
+    "schema": "v50 — company_id on mitigations, UNIQUE(company_id, mitigation_uid), Deferred CHECK constraint",
+    "user_bullets": [
+      "Fixed: duplicate MAP IDs are now impossible — the database enforces that each MAP-NNNN is unique within your company.",
+      "Fixed: creating a Deferred MAP without specifying whether compensatory controls are in place is now blocked at every entry point, including when creating a risk with inline MAPs.",
+      "Fixed: the debug diagnostic field is no longer included in production API responses.",
+      "Fixed: deleting a glossary term or evidence file that doesn't exist now returns a proper 'not found' error instead of silently succeeding."
+    ],
+    "bullets": [
+      "S-02/D-03: schema_v50 adds company_id column to mitigations (backfilled from risks), NOT NULL enforced, UNIQUE(company_id, mitigation_uid) constraint eliminates MAP UID race condition.",
+      "S-03: schema_v50 adds CHECK constraint — compensatory_controls_in_place IN ('Yes','No') when status='Deferred'.",
+      "D-02: Inline MAP creation in POST /api/risks now validates compensatory_controls_in_place for each Deferred MAP, matching the existing enforcement on the standalone MAP POST/PUT routes. company_id also now populated in inline INSERT.",
+      "Standalone MAP POST: company_id added to INSERT so the new NOT NULL constraint is satisfied.",
+      "SEC-04/DC-01: _debug_cro field now only included in /api/my-tasks response when NODE_ENV=staging — never exposed in production.",
+      "E-01: DELETE /api/glossary/:id returns 404 when term not found (was silently 200).",
+      "E-02: DELETE /api/evidence/:id returns 404 when file not found (was silently 200).",
+      "T-01: testAuditEdgeCases() added to test-suite.js — covers D-02 (Deferred MAP validation), SEC-02 (cross-company link-risk ownership), W-01 (CRO accept state guard), E-01 (glossary 404), E-02 (evidence 404)."
+    ],
+    "files": [
+      "schema_v50_map_constraints.sql (new)",
+      "migrate-all.js (v50 added)",
+      "server.js (D-02 inline MAP validation, SEC-04/DC-01 _debug_cro conditional, E-01/E-02 404 fixes, company_id in MAP INSERTs)",
+      "test-suite.js (testAuditEdgeCases function)",
+      "package.json (2.15.0 → 2.16.0)"
+    ]
+  },
+  {
+    "version": "2.15.0",
+    "date": "3 Jul 2026",
+    "type": "Security",
+    "schema": "none",
+    "user_bullets": [
+      "Security fix: eliminated SQL injection risk from department-scoping queries — company identifiers are now always passed as parameters, never interpolated into SQL strings.",
+      "Security fix: the 'link control to risk' action now verifies both the risk and the control belong to your company before linking — prevents cross-company data linkage.",
+      "Data integrity fix: creating a risk with a department name that doesn't exist in your company's department list is now rejected with a clear error message.",
+      "Documentation fix: confirmed users.id is an integer (SERIAL) — no code changes needed."
+    ],
+    "bullets": [
+      "SEC-01: Replaced company_id = '${cid}' string interpolation with parameterized $1 in managerScopeClause and its two inline call sites (risks list query, my-tasks Manager queue). Removes SQL injection risk in all department code/name resolution subqueries.",
+      "SEC-02: POST /api/controls/:id/link-risk now performs a Promise.all ownership check — verifies risk_id belongs to req.company.id in risks table AND control_id belongs to req.company.id in controls_lib before INSERT. Returns 404 if either check fails.",
+      "D-01: POST /api/risks now validates req.body.department against the departments table (by code or name, case-insensitive) inside the transaction immediately after BEGIN. Returns 400 if the department doesn't exist for this company.",
+      "S-01: Confirmed users.id is SERIAL (INT) in schema_v2.sql — no GRC-side CLAUDE.md exists to correct; finding closed by inspection."
+    ],
+    "files": [
+      "server.js (SEC-01: 6 interpolations → $1; SEC-02: ownership check; D-01: dept validation)",
+      "package.json (2.14.0 → 2.15.0)"
+    ]
+  },
+  {
+    "version": "2.14.0",
+    "date": "3 Jul 2026",
+    "type": "Security",
+    "schema": "v49 — rate_limit_attempts table added",
+    "user_bullets": [
+      "Security improvement: login, MFA, and password reset rate limits now work correctly when the app is running on multiple servers simultaneously — an attacker can no longer bypass the limit by spreading requests across replicas."
+    ],
+    "bullets": [
+      "SEC-03: Replaced in-memory rate limiters for login/MFA/forgot-password/reset-password with a Postgres-backed makeDbRateLimiter. Single UPSERT with atomic window-reset resets the count at expiry without a separate cron. Fails open on DB error.",
+      "schema_v49: rate_limit_attempts table (key TEXT PK, count INT, window_start TIMESTAMPTZ) with index on window_start for cleanup.",
+      "apiLimiter (600 req/15 min global throttle) remains in-memory — adding 10–20 ms DB latency to every API call would be disproportionate for a general DDoS guard.",
+      "Background setInterval purges entries older than 1 hour every 10 minutes to keep the table small."
+    ],
+    "files": [
+      "server.js (makeDbRateLimiter + 4 limiter conversions + cleanup interval)",
+      "schema_v49_rate_limit_attempts.sql (new)",
+      "migrate-all.js (v49 added)",
+      "package.json (2.13.0 → 2.14.0)"
+    ]
+  },
+  {
+    "version": "2.13.0",
+    "date": "3 Jul 2026",
+    "type": "Security / Maintenance",
+    "schema": "none",
+    "user_bullets": [
+      "Fixed: Training videos are now properly access-controlled — a missing or invalid role can no longer receive a partial video list instead of being refused.",
+      "Fixed: Training videos for the Approver role now sort in the correct position in the training library.",
+      "Fixed: Requesting help for a page with no training video now returns a clear 'not found' response instead of an empty result."
+    ],
+    "bullets": [
+      "R-02/R-04: Removed redundant authenticate middleware from ~40 routes already covered by the global app.use('/api', authenticate, ...) — no behaviour change, eliminates double-auth per request.",
+      "R-03: Training GET routes now include requireRole guard covering all valid roles — returns 403 instead of silently falling back to Risk Champion access level if role is unset.",
+      "DC-03: Added Approver to the ORDER BY CASE in GET /api/training/videos — was sorting as NULL (after Admin), now correctly sits between Risk Champion and Viewer.",
+      "E-03: GET /api/training/help/:pageId now returns 404 when no video is found for the page (was returning null with 200)."
+    ],
+    "files": [
+      "server.js (R-02/R-03/R-04/DC-03/E-03)",
+      "package.json (2.12.0 → 2.13.0)"
+    ]
+  },
+  {
+    "version": "2.12.0",
+    "date": "3 Jul 2026",
+    "type": "Bug Fix",
+    "schema": "none",
+    "user_bullets": [
+      "Fixed: CRO can no longer decline a risk that hasn't been Manager-approved — preventing a risk from accidentally skipping the approval chain.",
+      "Fixed: Re-opening and then re-approving a risk now correctly marks it as Active instead of leaving it in an undefined state.",
+      "Fixed: The CRO acceptance queue no longer shows risks that are still awaiting Manager approval.",
+      "Fixed: Issue closure and risk-acceptance sign-off now correctly enforces separation of duties against the person who raised the issue (not a deprecated field).",
+      "Fixed: Deferring a Mitigation Action Plan now requires a Yes/No answer on compensatory controls before saving."
+    ],
+    "bullets": [
+      "W-01: cro-decline endpoint now rejects with 400 if approval_status != 'Approved' — prevents Draft/Awaiting risks from bypassing the Manager approval chain.",
+      "W-02: approve endpoint CASE WHEN risk_status = 'Re-opened' THEN 'Active' (was NULL) — fixes broken risk_status after re-approval.",
+      "W-03: GET /api/risks/pending-cro now filters AND approval_status = 'Approved' — removes pre-approval risks from CRO queue.",
+      "W-04: Issue SoD checks at /api/issues/:id/status now compare against created_by (not the deprecated owner field which is always null for manual issues).",
+      "W-05: POST /api/risks/:id/mitigations and PUT /api/mitigations/:id now return 400 if status=Deferred and compensatory_controls_in_place is not 'Yes' or 'No'."
+    ],
+    "files": [
+      "server.js (5 targeted fixes)",
+      "package.json (2.11.0 → 2.12.0)"
+    ]
+  },
+  {
+    "version": "2.11.0",
+    "date": "3 Jul 2026",
+    "type": "Enhancement",
+    "schema": "v48 — mitigations status constraint widened; compensatory_controls_in_place column added",
+    "user_bullets": [
+      "Mitigation Action Plans (MAPs) now support two new statuses: Deferred and Cancelled. When Deferred, you will be asked whether compensatory controls are in place (Yes/No) — this is logged in the audit trail.",
+      "MAPs that are Pending or In Progress past their end date now show an Overdue badge in red, making it easy to spot at-risk actions.",
+      "You can now add, edit, or delete individual MAPs directly from the risk detail panel — no need to re-create the whole risk."
+    ],
+    "bullets": [
+      "ENH-14: schema_v48 — mitigations status CHECK updated to include Deferred and Cancelled; compensatory_controls_in_place TEXT column added (CHECK 'Yes'/'No', NULL unless Deferred).",
+      "Backend: POST /api/risks/:id/mitigations, PUT /api/mitigations/:id, DELETE /api/mitigations/:id — all restricted to operational roles.",
+      "Audit log entries for map_create, map_update (with deferred details), and map_delete.",
+      "RiskDetail: MAP panel upgraded from read-only list to interactive cards with Edit/Delete buttons and + Add MAP.",
+      "Overdue badge: computed at render time (end_date < today AND status Pending/In Progress).",
+      "Status = Deferred triggers inline Yes/No compensatory controls question (shown in both NewRiskForm and MAP edit modal).",
+      "NewRiskForm: status dropdown updated with Deferred and Cancelled options + conditional compensatory controls radio."
+    ],
+    "files": [
+      "schema_v48_map_status_compensatory.sql (new)",
+      "migrate-all.js (schema_v48 added)",
+      "server.js (MAP CRUD endpoints, attachControlsAndMitigations updated, risk creation updated)",
+      "frontend/src/pages/RiskRegister.jsx (RiskDetail MAP panel, NewRiskForm MAP section, modal)",
+      "package.json (2.10.0 → 2.11.0)"
+    ]
+  },
+  {
+    "version": "2.10.0",
+    "date": "3 Jul 2026",
+    "type": "Enhancement",
+    "schema": "v47 — risk_sub_categories table added",
+    "user_bullets": [
+      "Risk categories and sub-categories are now pre-loaded for every new company — 11 standard categories covering Strategic, Operational, Financial, Compliance, Technology, and more.",
+      "When creating a risk, you now select the sub-category from a dropdown filtered to the chosen category — no more free-text entry.",
+      "Admins can add, rename, or delete categories and sub-categories at any time from the new Risk Configuration page in the Admin panel. Deletion is blocked if any risks are currently using that category."
+    ],
+    "bullets": [
+      "ENH-01/10: risk_sub_categories table added (schema_v47). FK to risk_categories with ON DELETE CASCADE.",
+      "SEED_TAXONOMY constant (11 categories, 68 sub-categories) added to server.js and migrate-all.js.",
+      "seedRiskTaxonomy() helper seeds all three company creation paths and backfills existing companies on migration.",
+      "GET /api/risk-taxonomy returns structured [{id, name, sub_categories}] for the current company.",
+      "POST/PUT/DELETE /api/risk-categories (Admin only) with in-use guard on delete.",
+      "POST/PUT/DELETE /api/risk-sub-categories (Admin only) with in-use guard on delete.",
+      "RiskConfig.jsx: new Admin page — expandable category list, inline rename, add/delete with error feedback.",
+      "RiskRegister.jsx NewRiskForm: category dropdown uses taxonomy objects; sub-category is now a filtered dropdown.",
+      "Layout.jsx: Risk Configuration added to Admin nav. App.jsx: route wired."
+    ],
+    "files": [
+      "schema_v47_risk_sub_categories.sql (new)",
+      "migrate-all.js (schema_v47 + backfill seed)",
+      "server.js (SEED_TAXONOMY, seedRiskTaxonomy, new endpoints, 3 company creation paths)",
+      "frontend/src/pages/RiskConfig.jsx (new)",
+      "frontend/src/pages/RiskRegister.jsx (taxonomy dropdowns)",
+      "frontend/src/pages/Layout.jsx (Risk Configuration nav item)",
+      "frontend/src/App.jsx (RiskConfig import + route)",
+      "package.json (2.9.0 → 2.10.0)"
+    ]
+  },
+  {
+    "version": "2.9.0",
+    "date": "3 Jul 2026",
+    "type": "Enhancement",
+    "schema": "v46 — user_companies.role CHECK constraint updated; all 'Submitter' rows renamed to 'Risk Champion'",
+    "user_bullets": [
+      "The 'Submitter' role has been renamed to 'Risk Champion' throughout the app — in menus, labels, and access controls.",
+      "Existing users with the Submitter role have been automatically updated to Risk Champion — no action needed."
+    ],
+    "bullets": [
+      "ENH-02: Full DB-level rename of 'Submitter' → 'Risk Champion' in user_companies.role.",
+      "schema_v46_rename_submitter.sql: drops old role CHECK constraint, renames existing rows, adds new constraint with 'Risk Champion'.",
+      "server.js: all role checks, requireRole() calls, validation messages, and comments updated.",
+      "Frontend: Layout.jsx, App.jsx, RiskRegister.jsx, UserManagement.jsx, MyTasks.jsx, OrgRoles.jsx, TrainingLibrary.jsx, TopBar.jsx, EvidenceAttachments.jsx, DepartmentField.jsx, help-content.js — all 'Submitter' references replaced.",
+      "test-suite.js, test-routing-audit.js, test-suite-extended.js, test-bcm.js updated."
+    ],
+    "files": [
+      "schema_v46_rename_submitter.sql (new)",
+      "migrate-v45-to-v46.js (new)",
+      "migrate-all.js (added schema_v46)",
+      "server.js (all Submitter → Risk Champion)",
+      "frontend/src/pages/Layout.jsx",
+      "frontend/src/App.jsx",
+      "frontend/src/pages/RiskRegister.jsx",
+      "frontend/src/pages/UserManagement.jsx",
+      "frontend/src/pages/MyTasks.jsx",
+      "frontend/src/pages/OrgRoles.jsx",
+      "frontend/src/pages/TrainingLibrary.jsx",
+      "frontend/src/components/*.jsx (TopBar, EvidenceAttachments, DepartmentField)",
+      "frontend/src/help-content.js",
+      "package.json (2.8.0 → 2.9.0)"
+    ]
+  },
+  {
+    "version": "2.8.0",
+    "date": "3 Jul 2026",
+    "type": "Enhancement",
+    "schema": "— (no schema changes)",
+    "user_bullets": [
+      "A new 'What's New' button in the sidebar lets you see a plain-English summary of what has changed in each release.",
+      "The release log document is now generated automatically every time a new version is deployed — no manual updates needed."
+    ],
+    "bullets": [
+      "changelog.json introduced as single source of truth with dual-tier content: user_bullets for the in-app What's New modal and full technical bullets + files for the Word doc.",
+      "WhatsNew.jsx modal component: reads changelog.json, shows last 3 versions' user_bullets, uses localStorage to track last-seen version.",
+      "Badge dot on 'What's New' sidebar button clears when user opens the modal.",
+      "scripts/generate-release-log.js: Node.js script (docx npm package) that reads changelog.json and regenerates GRC_App_Release_Log.docx automatically.",
+      "generate-release-log.js wired into deploy-staging.sh and deploy-certitude.sh as a pre-build step.",
+      "npm run release-log script added to package.json."
+    ],
+    "files": [
+      "grc-app/frontend/src/data/changelog.json (new — source of truth)",
+      "grc-app/frontend/src/components/WhatsNew.jsx (new)",
+      "grc-app/frontend/src/pages/Layout.jsx (What's New button + badge)",
+      "grc-app/scripts/generate-release-log.js (new)",
+      "grc-app/deploy-staging.sh (auto-generate Word doc pre-build)",
+      "grc-app/deploy-certitude.sh (auto-generate Word doc pre-build)",
+      "package.json (2.7.0 → 2.8.0, release-log script, docx devDependency)"
+    ]
+  },
+  {
+    "version": "2.7.0",
+    "date": "3 Jul 2026",
+    "type": "Enhancement",
+    "schema": "— (no schema changes)",
+    "user_bullets": [
+      "When you close an issue, the app now prompts you to review any linked risks — so risk records stay up to date.",
+      "If a closed issue has no linked risks, you'll get a reminder to check the Risk Register for any related risks worth updating."
+    ],
+    "bullets": [
+      "ENH-15: PostClosurePrompt modal fires after Closed-Remediated or Risk Accepted status on an issue.",
+      "If issue has linked risks: lists each risk_uid and suggests reviewing ratings or lifecycle status.",
+      "If no linked risks: generic reminder to check the Risk Register.",
+      "Prompt is optional — user can dismiss or navigate directly to the Risk Register.",
+      "onNavigate prop threaded from App.jsx to IssuesTracker for Risk Register navigation.",
+      "StatusForm.onDone() now passes savedStatus so parent can detect closing statuses."
+    ],
+    "files": [
+      "frontend/src/pages/IssuesTracker.jsx (PostClosurePrompt modal, onNavigate prop, StatusForm onDone)",
+      "frontend/src/App.jsx (onNavigate={setPage} on IssuesTracker)",
+      "package.json (2.6.0 → 2.7.0)"
+    ]
+  },
+  {
+    "version": "2.6.0",
+    "date": "3 Jul 2026",
+    "type": "Enhancement",
+    "schema": "schema_v43_reopen_reason.sql (risks: reopen_reason TEXT)",
+    "user_bullets": [
+      "Risks now show an Open, Closed, or Re-opened status alongside the existing approval workflow status.",
+      "Managers and CROs can close a risk (with a mandatory reason), and re-open it if circumstances change — the reason is recorded and shown on the risk.",
+      "Reopening a risk automatically sends it back through the approval workflow.",
+      "Each risk's detail view now shows any issues that have been linked to it."
+    ],
+    "bullets": [
+      "ENH-08: New Status column on Risk Register showing Open / Closed / Re-opened badges; existing Status column renamed to Lifecycle Status.",
+      "Manager, CRO, Consultant CRO only can close or reopen risks; Admin and Submitter removed from close/reopen endpoints.",
+      "Closing a risk requires closure_reason (already existed); reopening requires reopen_reason (new column).",
+      "Reopen resets approval_status to Awaiting Approval and sets risk_status = 'Re-opened'.",
+      "Re-opened badge clears automatically to Open when risk is re-approved.",
+      "attachControlsAndMitigations: 5th parallel query added for linked_issues (reverse lookup via issue_risks).",
+      "Linked Issues read-only panel added to RiskDetail between Mitigations and Related Risks.",
+      "canManageLifecycle gate: role === 'Manager' || role === 'CRO' || role === 'Consultant CRO'."
+    ],
+    "files": [
+      "server.js (close/reopen role gates, reopen_reason, Re-opened risk_status, approve clears Re-opened, attachControlsAndMitigations linked_issues, cloneRiskAsNewVersion reopen_reason)",
+      "frontend/src/pages/RiskRegister.jsx (StatusBadge, Lifecycle Status rename, linked issues panel, reopen reason form, canManageLifecycle)",
+      "migrate-v42-to-v43.js + schema_v43_reopen_reason.sql (new)",
+      "package.json (2.5.0 → 2.6.0)"
+    ]
+  },
+  {
+    "version": "2.5.0",
+    "date": "3 Jul 2026",
+    "type": "Enhancement",
+    "schema": "schema_v41_map_enhancements.sql (mitigations: mitigation_uid, action_owner, root_cause), schema_v42_issues_recurrence.sql (issues: is_recurring)",
+    "user_bullets": [
+      "A new 'Directive' control type is now available when adding controls to risks.",
+      "'Not yet tested' is now a valid effectiveness result for controls — useful for newly implemented controls that haven't been through a test cycle yet. Controls with this result will not trigger a remediation issue.",
+      "Mitigation actions now have a unique reference number (e.g. MAP-0001), an action owner, and a root cause field for clearer accountability and tracking.",
+      "You can now flag an issue as recurring to track patterns and repeat problems. A filter lets you view only recurring issues."
+    ],
+    "bullets": [
+      "ENH-04: 'Directive' added as control type in inline quick-add panel and risk create form Step controls.",
+      "ENH-05: 'Not yet tested' added as valid control effectiveness result; excluded from remediation and needs_reassessment triggers.",
+      "ENH-11: Mitigation Action Plan unique ID (MAP-NNNN) — company-scoped sequential via generateMitigationUID() using REGEXP_REPLACE.",
+      "ENH-12: action_owner TEXT column added to mitigations.",
+      "ENH-13: root_cause TEXT column added to mitigations.",
+      "ENH-16: is_recurring BOOLEAN added to issues; checkbox on IssueForm, badge on issue row, recurring-only filter button."
+    ],
+    "files": [
+      "server.js (ENH-05 result validation, ENH-11 generateMitigationUID, ENH-16 is_recurring INSERT/PATCH)",
+      "frontend/src/pages/RiskRegister.jsx (ENH-04 Directive option, ENH-11/12/13 MAP card rewrite with action owner + root cause)",
+      "frontend/src/pages/ControlLibrary.jsx (ENH-05 result options and badge)",
+      "frontend/src/pages/IssuesTracker.jsx (ENH-16 is_recurring checkbox, badge, filter)",
+      "migrate-v40-to-v41.js + schema_v41_map_enhancements.sql (new)",
+      "migrate-v41-to-v42.js + schema_v42_issues_recurrence.sql (new)",
+      "package.json (2.4.0 → 2.5.0)"
+    ]
+  },
+  {
+    "version": "2.4.0",
+    "date": "2 Jul 2026",
+    "type": "Bug Fix",
+    "schema": "— (no schema changes)",
+    "user_bullets": [
+      "Fixed an issue where the owner department was not pre-filling correctly when logging a new issue.",
+      "Minor display improvements to department and business unit selectors across the app."
+    ],
+    "bullets": [
+      "P0: Removed /api/debug endpoint (security exposure — returned raw environment variables).",
+      "P1: Submitter dept picker bug fixed — owner department now pre-selected correctly on issue create form.",
+      "P2: Version display in UI header corrected to reflect current package.json version.",
+      "P3: RiskRegister subtitle text corrected.",
+      "Fixed 3 cosmetic issues in DepartmentField and CascadingDeptSelector: label alignment, empty state placeholder, sub-dept display in Simple Mode."
+    ],
+    "files": [
+      "server.js (removed /api/debug route)",
+      "frontend/src/pages/RiskRegister.jsx (subtitle fix)",
+      "frontend/src/components/DepartmentField.jsx (cosmetic fixes)",
+      "frontend/src/components/CascadingDeptSelector.jsx (cosmetic fixes)",
+      "package.json (2.3.0 → 2.4.0)"
+    ]
+  },
+  {
+    "version": "2.3.0",
+    "date": "2 Jul 2026",
+    "type": "Bug Fix",
+    "schema": "— (no schema changes)",
+    "user_bullets": [
+      "Fixed a critical issue where business unit permissions were lost when a page was refreshed, causing some users to lose access to their assigned records.",
+      "Fixed an error that occurred when loading users who were assigned to business units set up before the current version."
+    ],
+    "bullets": [
+      "CRITICAL fix: GET /api/users SELECT was missing business_unit_ids column — BU scope lost on page reload, returning 500 errors for BU-scoped users.",
+      "HIGH fix: ::int[] cast on legacy BU code data throwing 500 — replaced with safe COALESCE + integer coercion."
+    ],
+    "files": [
+      "server.js (GET /api/users SELECT, BU int cast safety)",
+      "package.json (2.2.0 → 2.3.0)"
+    ]
+  },
+  {
+    "version": "2.2.0",
+    "date": "2 Jul 2026",
+    "type": "Bug Fix",
+    "schema": "— (no schema changes)",
+    "user_bullets": [
+      "Fixed the compliance calendar — managers now only see calendar items relevant to their department scope.",
+      "Several minor stability improvements to approval and status change workflows."
+    ],
+    "bullets": [
+      "Bug fix: GET /api/calendar compliance calendar dept scoping updated for BU-scoped Managers.",
+      "Fixed 6 low/minor issues from workflow audit: approval status guards, edge cases in status transitions, UI label inconsistencies."
+    ],
+    "files": [
+      "server.js (GET /api/calendar dept scoping, misc workflow guards)",
+      "package.json (2.1.0 → 2.2.0)"
+    ]
+  },
+  {
+    "version": "2.1.0",
+    "date": "2 Jul 2026",
+    "type": "Bug Fix",
+    "schema": "— (no schema changes)",
+    "user_bullets": [
+      "Fixed business unit permissions for managers — access is now correctly applied based on your assigned business units.",
+      "Fixed an error that prevented the department selector from loading correctly when assigning managers."
+    ],
+    "bullets": [
+      "Bug fix: UserManagement.jsx storing BU codes instead of BU integer IDs in user_companies.business_unit_ids.",
+      "Bug fix: GET /api/departments/without-manager updated to correctly resolve BU-scoped Managers.",
+      "Bug fix: BcmProcessRegister.jsx department code vs. integer FK mismatch resolved."
+    ],
+    "files": [
+      "server.js (GET /api/departments/without-manager BU resolution)",
+      "frontend/src/pages/UserManagement.jsx (BU ID vs. code fix)",
+      "frontend/src/pages/BcmProcessRegister.jsx (dept FK fix)",
+      "package.json (2.0.2 → 2.1.0)"
+    ]
+  },
+  {
+    "version": "2.0.2",
+    "date": "2 Jul 2026",
+    "type": "Enhancement",
+    "schema": "— (no schema changes)",
+    "user_bullets": [
+      "In Business Unit Mode, the Business Unit and Department are now shown as separate, clearly labeled fields when creating risks, issues, KRIs, and controls — making it easier to assign records to the right part of your organisation."
+    ],
+    "bullets": [
+      "Business Unit field split in entity create forms: Risk, Issues, KRI, and Control registers now show Business Unit and Department as separate labeled fields in BU Mode.",
+      "Improved UX in BU Mode by making BU selection explicit on all entity create/edit forms."
+    ],
+    "files": [
+      "frontend/src/pages/RiskRegister.jsx (BU field split on create form)",
+      "frontend/src/pages/IssuesTracker.jsx (BU field split)",
+      "frontend/src/pages/KriLibrary.jsx, KriRegister.jsx (BU field split)",
+      "frontend/src/pages/ControlLibrary.jsx (BU field split)",
+      "package.json (2.0.1 → 2.0.2)"
+    ]
+  },
+  {
+    "version": "2.0.1",
+    "date": "2 Jul 2026",
+    "type": "Bug Fix",
+    "schema": "— (no schema changes)",
+    "user_bullets": [
+      "Unique reference IDs are now applied consistently across all record types — issues, compliance obligations, policies, and business continuity plans all follow the same structured format.",
+      "The Business Unit mode setting can now be changed after a company is first created, directly from the Company Profile page."
+    ],
+    "bullets": [
+      "Gap fix: universal 4-part ID format extended to Issues (ISS-), Obligations (OBL-), Policies (POL-), and all BCM entities.",
+      "Added generateUnique4PartID() helper — replaces generateUniqueUid() for all entity types.",
+      "Gap fix: has_business_units now editable on existing companies via Company Profile page.",
+      "GET /api/companies/current/profile now returns has_business_units.",
+      "PUT /api/companies/current/profile now accepts has_business_units (COALESCE — omit to leave unchanged).",
+      "Companies.jsx: BU Mode toggle checkbox added to profile edit form with live warning on mode switch."
+    ],
+    "files": [
+      "server.js (generateUnique4PartID, all entity UID call sites, GET/PUT /api/companies/current/profile)",
+      "frontend/src/pages/Companies.jsx (BU Mode toggle on profile form)",
+      "package.json (2.0.0 → 2.0.1)"
+    ]
+  },
+  {
+    "version": "2.0.0",
+    "date": "2 Jul 2026",
+    "type": "Architecture",
+    "schema": "schema_v45_business_units.sql (business_units table, has_business_units on companies, BU columns on departments and user_companies)",
+    "user_bullets": [
+      "Business Unit Mode is now available — companies can be structured with multiple business units, each with their own departments and management scope.",
+      "All records (risks, controls, issues, etc.) now use a structured reference ID that reflects your company's department structure (e.g. RI-FIN-AR-0001).",
+      "Managers can be scoped to specific business units, so each manager only sees the risks and issues relevant to their area."
+    ],
+    "bullets": [
+      "Major release: Multi-Business-Unit architecture.",
+      "Company mode toggle: BU Mode (Yes) or Simple Mode (No).",
+      "New business_units table; has_business_units flag on companies.",
+      "business_unit_id + parent_dept_id columns on departments; business_unit_ids on user_companies.",
+      "Extended getManagerDepts() to resolve BU → Dept hierarchy.",
+      "Extended Approver lookup to cascade upward: sub-dept → parent dept → skip.",
+      "Universal 4-part ID format for all entities (RI-SLOT1-SLOT2-NNNN).",
+      "Cascading BU→Dept filter (BU Mode) and Dept→Sub-dept filter (Simple Mode) on all registers.",
+      "Admin: Business Units CRUD page, dept BU linkage, sub-dept parent linkage, BU scope on User Management."
+    ],
+    "files": [
+      "schema_v45_business_units.sql (new)",
+      "server.js (resolveIDSlots, generateUnique4PartID, BU API routes, getUserCompanies)",
+      "frontend/src/pages/BusinessUnits.jsx (new)",
+      "frontend/src/components/CascadingDeptSelector.jsx (new)",
+      "frontend/src/pages/UserManagement.jsx, Departments.jsx, Companies.jsx, RiskRegister.jsx, IssuesTracker.jsx (updated)",
+      "package.json (1.17.0 → 2.0.0)"
+    ]
+  },
+  {
+    "version": "1.17.0",
+    "date": "Jun 2026",
+    "type": "Bug Fix",
+    "schema": "— (no schema changes)",
+    "user_bullets": [
+      "When sending a risk back for revision, you now enter your reason in a proper form panel — no more browser popup dialogs."
+    ],
+    "bullets": [
+      "Replaced window.prompt send-back dialogs in MyTasks.jsx with proper modal UI.",
+      "handleManagerReject and handleApproverReject now open an in-page modal with reason textarea, busy state, and error display."
+    ],
+    "files": [
+      "frontend/src/pages/MyTasks.jsx",
+      "package.json (1.16.0 → 1.17.0)"
+    ]
+  },
+  {
+    "version": "1.16.0",
+    "date": "Jun 2026",
+    "type": "Bug Fix",
+    "schema": "— (no schema changes)",
+    "user_bullets": [
+      "Fixed several issues with the Manager role: approvals, send-backs, and risks imported by an admin now flow through the correct workflow steps."
+    ],
+    "bullets": [
+      "Fixed 5 Manager role bugs: import handlers using legacy dept field; Accept/Avoid risks bypassing CRO queue on import; approve endpoint missing status guard; Admin Approve button causing 403s; window.prompt send-back modals in RiskRegister.jsx."
+    ],
+    "files": [
+      "server.js (importRisksRow, importControlsRow, /api/risks/:id/approve)",
+      "frontend/src/pages/RiskRegister.jsx (send-back modal)",
+      "package.json (1.15.x → 1.16.0)"
+    ]
+  },
+  {
+    "version": "1.15.x",
+    "date": "Jun 2026",
+    "type": "Enhancement",
+    "schema": "schema_v42_fix_cro_declined.sql, schema_v43_fix_cro_declined_v2.sql",
+    "user_bullets": [
+      "CROs can now send back risks they have been asked to accept or avoid, with a reason recorded for transparency."
+    ],
+    "bullets": [
+      "CRO Acceptance workflow: CRO can decline (send back) Accept/Avoid risks.",
+      "New /api/risks/:id/cro-decline endpoint.",
+      "Send Back button added to CRO Acceptance queue in MyTasks.jsx.",
+      "cro_acceptance_status supports pending_cro, accepted, declined."
+    ],
+    "files": [
+      "server.js (/api/risks/:id/cro-decline)",
+      "frontend/src/pages/MyTasks.jsx"
+    ]
+  },
+  {
+    "version": "1.14.x",
+    "date": "May–Jun 2026",
+    "type": "Enhancement",
+    "schema": "schema_v40_approver_role.sql (approver_email, approved_at_approver on risks)",
+    "user_bullets": [
+      "A new Approver role is available as an optional step between the person who submits a risk and the manager who reviews it.",
+      "If no Approver is assigned to a department, the workflow automatically skips to the Manager — no configuration needed."
+    ],
+    "bullets": [
+      "Approver role introduced as optional workflow layer between Submitter and Manager.",
+      "approver_email and approved_at_approver columns added to risks.",
+      "Approver can approve or send back risks; if no Approver assigned, workflow skips to Manager.",
+      "Training Videos: role_level extended to include Approver."
+    ],
+    "files": [
+      "server.js (approver workflow routes)",
+      "frontend/src/pages/MyTasks.jsx, RiskRegister.jsx"
+    ]
+  },
+  {
+    "version": "1.13.0",
+    "date": "May 2026",
+    "type": "Enhancement",
+    "schema": "schema_v19_additions.sql (impact pillar columns on risks, pillar definitions in company_settings)",
+    "user_bullets": [
+      "Risk impact can now be scored across up to five dimensions: Financial, Operational, Reputational, Regulatory, and Strategic.",
+      "The highest-scoring dimension (the 'governing pillar') is shown as a badge on each risk so reviewers know which area is most affected."
+    ],
+    "bullets": [
+      "Multi-pillar impact scoring system across up to 5 pillars.",
+      "Governing pillar badge displayed on Risk Register.",
+      "Pillar definitions stored in company_settings, configurable per company.",
+      "ScoringMethodology admin page updated with pillar accordion and updated likelihood definitions."
+    ],
+    "files": [
+      "server.js (pillar scoring API)",
+      "frontend/src/pages/RiskRegister.jsx, ScoringMethodology.jsx",
+      "frontend/src/components/RiskForm.jsx",
+      "package.json (→ 1.13.0)"
+    ]
+  },
+  {
+    "version": "1.12.x",
+    "date": "Apr–May 2026",
+    "type": "Enhancement",
+    "schema": "schema_v34–v44 (risk_library, benchmarking, maturity_assessment, company_profile, training_videos, evidence_board_approval)",
+    "user_bullets": [
+      "Board approval decisions can now include file attachments as supporting evidence.",
+      "Training videos are now available directly in the app, filtered to show only content relevant to your role.",
+      "New Maturity Assessment module — benchmark your GRC programme against industry standards.",
+      "A GCC industry risk and control library is available as a reference when building out your own register."
+    ],
+    "bullets": [
+      "Evidence Attachments extended with board_approval entity type.",
+      "Training Videos module added with role-level gating.",
+      "Company Profile page.",
+      "Maturity Assessment module.",
+      "Consultant Benchmarking module.",
+      "GCC Industry Risk & Control Library (155 risks, 105 controls) seeded as global reference data."
+    ],
+    "files": [
+      "server.js",
+      "frontend/src/pages/* (multiple pages)"
+    ]
+  },
+  {
+    "version": "1.11.x",
+    "date": "Mar–Apr 2026",
+    "type": "Enhancement",
+    "schema": "schema_v17–v33 (group structure, MFA, email reset, BCM tables, risk-BCP links)",
+    "user_bullets": [
+      "Business Continuity Management is now available — create and manage BCP plans, recovery scenarios, test records, and activations.",
+      "Risks can now be linked to BCP plans, so you can see which continuity plans are in place for each risk.",
+      "Multi-factor authentication (MFA) is now supported for added account security.",
+      "Password reset via email is now available if you forget your credentials."
+    ],
+    "bullets": [
+      "BCM module: BCP Plans, BCP Tests, Scenarios, Dependencies, Activations.",
+      "Risk ↔ BCP linkage.",
+      "Group/Subsidiary company structure (parent_company_id).",
+      "Industry field on companies.",
+      "MFA (Multi-Factor Authentication).",
+      "Email-based password reset."
+    ],
+    "files": [
+      "server.js",
+      "frontend/src/pages/* (BCM pages)"
+    ]
+  },
+  {
+    "version": "1.10.x",
+    "date": "Feb–Mar 2026",
+    "type": "Enhancement",
+    "schema": "schema_v7–v16 (department columns, escalation_rules, risk enhancements, glossary, evidence_attachments, role_governance)",
+    "user_bullets": [
+      "Controls, KRIs, and issues are now scoped to departments — each team sees only what's relevant to them.",
+      "A new Risk Appetite score and Risk Velocity field are now available on each risk.",
+      "Supporting documents and evidence can now be attached directly to risks, controls, issues, obligations, and KRIs.",
+      "A Glossary page has been added for consistent terminology across the platform.",
+      "Escalation rules can now be configured to automatically escalate risks above a set threshold."
+    ],
+    "bullets": [
+      "Department scoping for Controls, KRIs, and Issues.",
+      "Escalation Rules engine (threshold-based auto-escalation).",
+      "Risk appetite score, risk velocity, risk taxonomy terms (cause/consequence).",
+      "Corrective control type added.",
+      "KRI threshold bands (JSONB) for traffic-light display.",
+      "Glossary and company settings pages.",
+      "Evidence attachments on risks, controls, issues, obligations, KRIs.",
+      "Consultant CRO role introduced."
+    ],
+    "files": [
+      "server.js",
+      "frontend/src/pages/*"
+    ]
+  },
+  {
+    "version": "1.0.x",
+    "date": "Nov 2025–Jan 2026",
+    "type": "Architecture",
+    "schema": "schema_v2–v6 (multi-tenant, core tables, controls_lib, compliance_obligations, issues, department columns)",
+    "user_bullets": [
+      "Initial launch: Risk Register, Control Library, Compliance Obligations, Issues & Actions Tracker, and KRI modules.",
+      "Department-scoped roles — Submitter, Manager, CRO, Viewer, and Admin — so each person sees only what they need to.",
+      "A full audit log records all significant changes across the platform."
+    ],
+    "bullets": [
+      "Initial multi-tenant platform launch.",
+      "Core modules: Risk Register, Controls Library, Compliance Obligations, Issues, KRIs.",
+      "RACI matrix on risks and controls.",
+      "Org Roles management (RACI).",
+      "Policies and policy linkages.",
+      "Department-scoped user roles: Submitter, Manager, CRO, Viewer, Admin.",
+      "Email-based authentication with session management.",
+      "Audit log on all material changes.",
+      "Per-company user management."
+    ],
+    "files": [
+      "server.js",
+      "frontend/src/* (all core pages)",
+      "package.json"
+    ]
+  }
+]

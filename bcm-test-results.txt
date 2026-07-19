@@ -1,0 +1,181 @@
+
+╔══════════════════════════════════════════════════════╗
+║   GRC Workstation — BCM Module Test Suite            ║
+╚══════════════════════════════════════════════════════╝
+  Target: https://grc-app-i7277bhvma-nn.a.run.app
+  Date:   2026-06-27T15:11:10.364Z
+
+
+══ SETUP ══════════════════════════════════════════════
+  ✅  Admin login
+  ✅  Company resolved — id: 2
+  ✅  Company switched
+  ✅  Manager created — id: 192
+  ✅  Manager logged in
+  ✅  Viewer created — id: 193
+  ✅  Viewer logged in
+  ✅  CRO created — id: 194
+  ✅  CRO logged in
+  ✅  Submitter created — id: 195
+  ✅  Submitter logged in
+  ✅  Test risk skipped (will test process linking without risk) — status: 400
+
+══ 0b. FULL RBAC MATRIX ════════════════════════════════
+  ✅  Manager → GET processes allowed
+  ✅  Manager → GET bcps allowed
+  ✅  Manager → GET scenarios allowed
+  ✅  Manager → GET dependencies allowed
+  ✅  Manager → GET activations allowed
+  ✅  Manager → GET tests allowed
+  ✅  Manager → GET dashboard allowed
+  ✅  CRO → GET processes allowed
+  ✅  CRO → GET bcps allowed
+  ✅  CRO → GET scenarios allowed
+  ✅  CRO → GET dependencies allowed
+  ✅  CRO → GET activations allowed
+  ✅  CRO → GET tests allowed
+  ✅  CRO → GET dashboard allowed
+  ✅  CRO → POST processes blocked (403)
+  ✅  Submitter → GET processes blocked (403)
+  ✅  Submitter → GET bcps blocked (403)
+  ✅  Submitter → GET scenarios blocked (403)
+  ✅  Submitter → GET dependencies blocked (403)
+  ✅  Submitter → GET activations blocked (403)
+  ✅  Submitter → GET tests blocked (403)
+  ✅  Submitter → GET dashboard blocked (403)
+  ✅  Submitter → POST processes blocked (403)
+  ✅  Viewer → GET processes blocked (403)
+  ✅  Viewer → GET bcps blocked (403)
+  ✅  Viewer → GET scenarios blocked (403)
+  ✅  Viewer → GET dependencies blocked (403)
+  ✅  Viewer → GET activations blocked (403)
+  ✅  Viewer → GET tests blocked (403)
+  ✅  Viewer → GET dashboard blocked (403)
+  ✅  Viewer → POST processes blocked (403)
+  ✅  Admin → GET processes allowed (200)
+
+══ 1. CRITICAL PROCESS REGISTER ═══════════════════════
+  ✅  Viewer blocked from GET processes
+  ✅  Viewer blocked from POST processes
+  ✅  Missing name → 400
+  ✅  Invalid criticality → 400
+  ✅  Process created — BCP-PR-0011
+  ✅  Second process created — BCP-PR-0012
+  ✅  GET list returns process — total: 2
+  ✅  GET single process — uid: BCP-PR-0011
+  ✅  PATCH process — name updated
+  ✅  GET unknown process → 404
+
+══ 2. BCP DOCUMENT LIBRARY ═════════════════════════════
+  ✅  Viewer blocked from BCPs
+  ✅  Missing BCP name → 400
+  ✅  Invalid testing_frequency → 400
+  ✅  BCP created — BCP-0009
+  ✅  Second BCP created — BCP-0010
+  ✅  GET BCPs list — total: 2
+  ✅  GET single BCP — uid: BCP-0009
+  ✅  PATCH BCP — process links updated — version: 2.2
+  ✅  GET unknown BCP → 404
+
+══ 3. BCP TESTING LOG ══════════════════════════════════
+  ✅  Viewer blocked from tests
+  ✅  Missing bcp_id → 400
+  ✅  Missing test_date → 400
+  ✅  Missing test_type → 400
+  ✅  BCP test record created — BCT-0001
+  ✅  BCP last_tested_date auto-refreshed — date: 2025-06-15, result: Pass
+  ✅  GET tests list — total: 1
+  ✅  Filter by bcp_id works — found: 1
+  ✅  GET single test — uid: BCT-0001
+  ✅  PATCH test — follow-up marked complete
+  ✅  Second test created — uid: BCT-0002
+  ✅  BCP summary reflects most recent test result — result: Fail
+  ✅  GET unknown test → 404
+
+══ 4. SCENARIO LIBRARY ═════════════════════════════════
+  ✅  Viewer blocked from scenarios
+  ✅  Missing scenario name → 400
+  ✅  Scenario created — SCN-0005 — High×Critical = Critical risk
+  ✅  Second scenario created — SCN-0006
+  ✅  GET scenarios list — total: 2
+  ✅  GET single scenario — uid: SCN-0005
+  ✅  PATCH scenario — BCP links updated
+  ✅  BCP shows linked scenario (integration wiring) — scenario_ids: 5
+  ✅  GET unknown scenario → 404
+
+══ 5. DEPENDENCY & SPOF REGISTER ══════════════════════
+  ✅  Viewer blocked from dependencies
+  ✅  Missing dependency name → 400
+  ✅  Dependency created — DEP-0005
+  ✅  SPOF dependency created — DEP-0006
+  ✅  GET dependencies — SPOF sorts first — total: 2
+  ✅  GET single SPOF dependency — uid: DEP-0006
+  ✅  PATCH dependency — mitigation updated
+  ✅  GET unknown dependency → 404
+
+══ 6. ACTIVATION / INCIDENT LOG ════════════════════════
+  ✅  Viewer blocked from activations
+  ✅  Missing title → 400
+  ✅  Missing incident_date → 400
+  ✅  Activation created — INC-0001 — status: Active
+  ✅  Closed activation created — INC-0002
+  ✅  GET activations list — total: 2
+  ✅  GET single activation — uid: INC-0001
+  ✅  PATCH activation — closed with outcomes — rto_met: true, rpo_met: false
+  ✅  GET unknown activation → 404
+
+══ 7. BCM DASHBOARD + KRIs ═════════════════════════════
+  ✅  Viewer blocked from dashboard
+  ✅  GET dashboard — all fields present — processes: 2, bcps: 1, scenarios: 2, spofs: 1, incidents: 0
+  ✅  Manager can access dashboard
+
+══ 8. INTEGRATION WIRING ═══════════════════════════════
+  ✅  Scenario → Process: link persisted
+  ✅  Scenario → BCP: link persisted
+  ✅  BCP → Scenario: reverse link works — scenario_ids: 1
+  ✅  BCP → Process: link persisted
+  ✅  Activation → BCP: link persisted
+  ✅  Activation → Process: link persisted
+  ✅  Dependency → Process: link persisted
+  ✅  BCP summary reverts to Pass after Fail test deleted
+
+══ 9. DELETE OPERATIONS (RBAC + BEHAVIOUR) ════════════
+  ✅  Manager cannot delete process
+  ✅  Manager cannot delete BCP
+  ✅  Manager cannot delete scenario
+  ✅  Manager cannot delete dependency
+  ✅  Manager cannot delete test record
+  ✅  Manager cannot delete activation
+  ✅  Admin soft-deleted dependency
+  ✅  Deleted dependency absent from list
+  ✅  Admin hard-deleted test record
+  ✅  Deleted test absent from list
+  ✅  BCP last_tested_date is null after all tests deleted
+  ✅  Admin hard-deleted activation
+  ✅  Admin soft-deleted scenario
+  ✅  Admin soft-deleted BCP
+  ✅  Admin soft-deleted process
+  ✅  Deleted process absent from list
+  ✅  Deleted BCP absent from list
+  ✅  Deleted scenario absent from list
+
+══ 10. UID UNIQUENESS ══════════════════════════════════
+  ✅  Process UIDs unique — UIDs: BCP-PR-0013, BCP-PR-0014, BCP-PR-0015
+  ✅  BCP UIDs unique — UIDs: BCP-0011, BCP-0012
+
+══ CLEANUP ═════════════════════════════════════════════
+  ✅  Manager user deleted
+  ✅  Viewer user deleted
+  ✅  CRO user deleted
+  ✅  Submitter user deleted
+
+  Cleanup complete.
+
+╔══════════════════════════════════════════════════════╗
+║   RESULTS                                            ║
+╚══════════════════════════════════════════════════════╝
+
+  Total:  137
+  Passed: 137 ✅
+  Failed: 0 ✅
+
