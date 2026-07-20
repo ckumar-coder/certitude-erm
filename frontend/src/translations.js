@@ -464,12 +464,6 @@ const T = {
     glossary_no_match:     { en: 'No terms match your search.',                      ar: 'لا توجد مصطلحات تطابق بحثك.' },
     no_terms:              { en: 'No terms defined.',                                ar: 'لم يتم تحديد مصطلحات.' },
 
-    // ── Training Videos ───────────────────────────────────────────────────────
-    training_title:       { en: 'Training Videos',                 ar: 'مقاطع التدريب' },
-    training_subtitle:    { en: 'Step-by-step walkthroughs for each role. Watch the videos for your role and, if applicable, for roles you manage.', ar: 'إرشادات خطوة بخطوة لكل دور. شاهد مقاطع الفيديو الخاصة بدورك، وإن أمكن، بالأدوار التي تديرها.' },
-    no_videos:            { en: 'No training videos uploaded.',    ar: 'لم يتم رفع مقاطع تدريبية.' },
-    upload_video:         { en: 'Upload Video',                    ar: 'رفع مقطع' },
-
     // ── Audit Log ─────────────────────────────────────────────────────────────
     audit_title:           { en: 'Audit Log',                          ar: 'سجل المراجعة' },
     audit_subtitle:        { en: 'A complete record of all actions taken in the system.', ar: 'سجل كامل بجميع الإجراءات المتخذة في النظام.' },

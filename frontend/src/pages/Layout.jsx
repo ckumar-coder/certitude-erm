@@ -41,7 +41,6 @@ const AR_LABELS = {
     'ai-integration':     'تكامل الذكاء الاصطناعي',
     'storage-health':     'التخزين والصحة',
     'glossary':           'المسرد',
-    'training':           'مقاطع التدريب',
     'audit':              'سجل المراجعة',
     'data-tools':         'استيراد / تصدير',
     'incident-log':       'سجل الحوادث',
@@ -101,7 +100,6 @@ const NAV_ITEMS = [
 
     // ── Cross-cutting (ungrouped — below Admin so utility items stay at the bottom) ──
     { id: 'glossary',   label: 'Glossary',          roles: ALL_ROLES },
-    { id: 'training',   label: 'Training Videos',   roles: ALL_ROLES },
     { id: 'audit',      label: 'Audit Log',         roles: ALL_ROLES },
     { id: 'data-tools', label: 'Import / Export',   roles: CRO_ROLES },
 ];
@@ -171,8 +169,7 @@ export default function Layout({ page, onNavigate, children, groupView }) {
     const resolveDept = (code) => code ? (deptMap[code.toLowerCase()] || code) : null;
 
     const visibleItems = NAV_ITEMS.filter((item) =>
-        (role === 'Admin' || role === 'Super Admin' || item.roles.includes(role)) &&
-        !(demoMode === 'risk-only' && item.id === 'training')
+        (role === 'Admin' || role === 'Super Admin' || item.roles.includes(role))
     );
 
     // Build a list of { type: 'heading'|'item'|'maturity', ... } for rendering.

@@ -25,15 +25,6 @@ const PALETTE = [
 export default function HelpPanel({ page, onClose, onNavigate }) {
     const content = getHelp(page);
     const [openIdx, setOpenIdx] = useState(null);
-    const [pageVideo, setPageVideo] = useState(null);
-
-    useEffect(() => {
-        if (!page) return;
-        fetch(`/api/training/help/${page}`, { credentials: 'include' })
-            .then((r) => r.ok ? r.json() : null)
-            .then((v) => setPageVideo(v || null))
-            .catch(() => {});
-    }, [page]);
 
     const toggle = (i) => setOpenIdx((prev) => (prev === i ? null : i));
 
@@ -121,39 +112,6 @@ export default function HelpPanel({ page, onClose, onNavigate }) {
                             <p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>
                                 No help content available for this page yet.
                             </p>
-                        </div>
-                    )}
-
-                    {/* Training video deep-link */}
-                    {pageVideo && onNavigate && (
-                        <div style={{
-                            margin: '8px 12px',
-                            padding: '10px 14px',
-                            background: '#F0F7FF',
-                            border: '1px solid #C8D8EC',
-                            borderRadius: 8,
-                            display: 'flex', alignItems: 'center', gap: 10,
-                        }}>
-                            <span style={{ fontSize: 18, lineHeight: 1 }}>▶</span>
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ fontSize: 11, fontWeight: 700, color: '#1A3A6A', marginBottom: 2 }}>
-                                    Training video available
-                                </div>
-                                <div style={{ fontSize: 11, color: '#4b5563', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                    {pageVideo.title}
-                                </div>
-                            </div>
-                            <button
-                                onClick={() => { onClose(); onNavigate('training'); }}
-                                style={{
-                                    fontSize: 11, fontWeight: 700,
-                                    color: '#1A3A6A', background: '#D0E4F5',
-                                    border: 'none', borderRadius: 5,
-                                    padding: '4px 10px', cursor: 'pointer', whiteSpace: 'nowrap',
-                                }}
-                            >
-                                Watch →
-                            </button>
                         </div>
                     )}
 

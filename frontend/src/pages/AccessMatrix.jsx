@@ -191,7 +191,7 @@ const SECTIONS = [
             { action: 'Scoring Methodology',
               note: null,
               cells: [F,    F,    F,    F,    F,    F,    F] },
-            { action: 'Glossary & Training',
+            { action: 'Glossary',
               note: null,
               cells: [F,    F,    F,    F,    F,    F,    F] },
         ],

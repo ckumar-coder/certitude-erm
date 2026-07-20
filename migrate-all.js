@@ -91,6 +91,7 @@ const SCHEMA_FILES = [
     'schema_v68_super_admin.sql',
     'schema_v69_risk_governance_docs.sql',
     'schema_v70_risk_library_seed.sql',
+    'schema_v71_remove_training_videos.sql',
 ];
 
 // Files that were applied before migration tracking was introduced.

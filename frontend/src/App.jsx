@@ -37,7 +37,6 @@ import SetupWizard from './pages/SetupWizard';
 import ConsultantDashboard from './pages/ConsultantDashboard';
 import CriticalRisksLog from './pages/CriticalRisksLog';
 import MaturityAssessment from './pages/MaturityAssessment';
-import TrainingLibrary from './pages/TrainingLibrary';
 import AccessMatrix from './pages/AccessMatrix';
 import IncidentLog from './pages/IncidentLog';
 import RiskAppetite from './pages/RiskAppetite';
@@ -174,8 +173,6 @@ export default function App() {
         content = <About />;
     } else if (page === 'glossary') {
         content = <Glossary />;
-    } else if (page === 'training') {
-        content = <TrainingLibrary />;
 
     // ── Operational pages (Admin has full access for demo) ───────────────────
     } else if (page === 'my-tasks' && (role === 'Admin' || isOp || role === 'Risk Champion')) {
