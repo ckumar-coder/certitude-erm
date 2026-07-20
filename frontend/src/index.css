@@ -637,6 +637,14 @@ th {
   overflow: hidden;
 }
 
+/* RTL: the sidebar sits on the right in Arabic, so open the help panel
+   on the left instead — otherwise it covers the navigation. */
+[dir="rtl"] .help-panel {
+  right: auto;
+  left: 0;
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.12);
+}
+
 .help-panel-header {
   display: flex;
   align-items: center;
