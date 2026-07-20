@@ -287,7 +287,19 @@ function totpUri(secret, email) {
 
 // #10: Restrict body size — 100 KB is ample for all API payloads (SOC 2: CC6.6)
 app.use(express.json({ limit: '100kb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+    setHeaders: (res, filePath) => {
+        if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+            // Content-hashed build output (e.g. index-<hash>.js) — the filename
+            // changes on every deploy, so it's safe to cache indefinitely.
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        } else if (path.basename(filePath) === 'index.html') {
+            // Never let a stale shell get cached — always revalidate, so a client
+            // always picks up the current build's asset filenames after a deploy.
+            res.setHeader('Cache-Control', 'no-cache');
+        }
+    },
+}));
 
 // #9: API-wide rate limiter — 200 requests / 15 min per IP (SOC 2: CC6.6)
 // Applied after static files so asset requests don't count toward the limit.
@@ -10562,7 +10574,17 @@ app.delete('/api/risk-gov/documents/:id', requireRole(...RGD_ROLES), asyncHandle
 }));
 
 // SPA catch-all — must be AFTER all API routes so it never intercepts /api/* requests.
-app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+// Only falls back to index.html for real page navigations. A request for a static
+// asset that express.static didn't find (e.g. a stale cached client — standalone Dock
+// app or otherwise — asking for a JS/CSS bundle filename from a previous deploy) gets
+// a real 404 instead of silently being served index.html's markup, which the browser
+// can't execute as JS/apply as CSS and which used to render as a blank page.
+app.get('*', (req, res) => {
+    const looksLikeStaticAsset = req.path.startsWith('/assets/') || /\.[a-zA-Z0-9]+$/.test(req.path);
+    if (looksLikeStaticAsset) return res.status(404).end();
+    res.setHeader('Cache-Control', 'no-cache');
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
 // ── Body-size error handler — must come before the generic 500 handler ─────────
 app.use((err, req, res, next) => {
