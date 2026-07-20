@@ -2,7 +2,6 @@ require('dotenv').config();
 
 const express = require('express');
 const path    = require('path');
-const { getSignedReadUrl, getSignedUploadUrl, deleteObject } = require('./gcs');
 const {
     encryptPassword,
     sendTestEmail,
@@ -12326,23 +12325,32 @@ app.get('/api/risk-gov/documents', requireRole(...RGD_ROLES), asyncHandler(async
     res.json(rows.rows);
 }));
 
-// POST /api/risk-gov/upload-url — get signed GCS URL for direct browser upload
-app.post('/api/risk-gov/upload-url', requireRole(...RGD_ROLES), asyncHandler(async (req, res) => {
-    const { filename, contentType } = req.body;
-    if (!filename || !contentType) return res.status(400).json({ error: 'filename and contentType are required' });
-    const safeName = path.basename(filename).replace(/\.\./g, '');
-    if (!safeName) return res.status(400).json({ error: 'Invalid filename' });
-    const gcsPath = `risk-gov-docs/${req.company.id}/${Date.now()}-${safeName}`;
-    const url = await getSignedUploadUrl(gcsPath, contentType, 15);
-    res.json({ url, gcsPath });
-}));
+// Documents are stored as base64 blobs directly in Postgres (same pattern
+// as evidence_attachments) rather than external object storage — see
+// schema_v72_risk_gov_docs_embed_storage.sql.
+const RGD_MAX_BYTES   = 10 * 1024 * 1024;  // 10MB per-file limit
+const RGD_QUOTA_BYTES = 500 * 1024 * 1024; // 500MB per-company quota
 
-// POST /api/risk-gov/documents — save a new document record (after GCS upload)
+// POST /api/risk-gov/documents — create a new document (body includes file_data, base64)
 app.post('/api/risk-gov/documents', requireRole(...RGD_ROLES), asyncHandler(async (req, res) => {
-    const { category_id, title, description, file_name, file_size, gcs_path } = req.body;
-    if (!category_id || !title || !file_name || !gcs_path) {
-        return res.status(400).json({ error: 'category_id, title, file_name, and gcs_path are required' });
+    const { category_id, title, description, file_name, mime_type, file_data } = req.body;
+    if (!category_id || !title || !file_name || !file_data) {
+        return res.status(400).json({ error: 'category_id, title, file_name, and file_data are required' });
     }
+    const bytes = Buffer.byteLength(file_data, 'base64');
+    if (bytes > RGD_MAX_BYTES) {
+        return res.status(400).json({ error: `File too large (${Math.round(bytes / (1024 * 1024))}MB). Maximum is 10MB per file.` });
+    }
+    const usageRes = await pool.query(
+        `SELECT COALESCE(SUM(file_size), 0) AS total FROM risk_gov_documents WHERE company_id = $1`,
+        [req.company.id]
+    );
+    if (parseInt(usageRes.rows[0].total, 10) + bytes > RGD_QUOTA_BYTES) {
+        return res.status(400).json({ error: 'Company storage quota exceeded (500 MB). Please delete old documents before uploading new ones.' });
+    }
+    const scan = await scanFile(file_name, mime_type || 'application/octet-stream', file_data);
+    if (!scan.safe) return res.status(400).json({ error: `File rejected: ${scan.reason}` });
+
     const cat = await pool.query(
         'SELECT id, code FROM risk_gov_categories WHERE id = $1 AND company_id = $2',
         [category_id, req.company.id]
@@ -12361,11 +12369,11 @@ app.post('/api/risk-gov/documents', requireRole(...RGD_ROLES), asyncHandler(asyn
     const docId = `${code}-${year}-${seq}`;
     const r = await pool.query(
         `INSERT INTO risk_gov_documents
-           (company_id, category_id, doc_id, version, title, description, file_name, file_size, gcs_path, uploaded_by, is_latest)
-         VALUES ($1, $2, $3, 1, $4, $5, $6, $7, $8, $9, true)
-         RETURNING *`,
+           (company_id, category_id, doc_id, version, title, description, file_name, file_size, mime_type, file_data, uploaded_by, is_latest)
+         VALUES ($1, $2, $3, 1, $4, $5, $6, $7, $8, $9, $10, true)
+         RETURNING id, company_id, category_id, doc_id, version, title, description, file_name, file_size, mime_type, uploaded_by, uploaded_at, is_latest`,
         [req.company.id, category_id, docId, title.trim(), description?.trim() || null,
-         file_name, file_size || null, gcs_path, req.user.id]
+         file_name, bytes, mime_type || null, file_data, req.user.id]
     );
     res.status(201).json(r.rows[0]);
 }));
@@ -12373,8 +12381,22 @@ app.post('/api/risk-gov/documents', requireRole(...RGD_ROLES), asyncHandler(asyn
 // POST /api/risk-gov/documents/:id/version — upload a new version of an existing document
 app.post('/api/risk-gov/documents/:id/version', requireRole(...RGD_ROLES), asyncHandler(async (req, res) => {
     const docDbId = parseInt(req.params.id, 10);
-    const { file_name, file_size, gcs_path, description } = req.body;
-    if (!file_name || !gcs_path) return res.status(400).json({ error: 'file_name and gcs_path are required' });
+    const { file_name, mime_type, file_data, description } = req.body;
+    if (!file_name || !file_data) return res.status(400).json({ error: 'file_name and file_data are required' });
+    const bytes = Buffer.byteLength(file_data, 'base64');
+    if (bytes > RGD_MAX_BYTES) {
+        return res.status(400).json({ error: `File too large (${Math.round(bytes / (1024 * 1024))}MB). Maximum is 10MB per file.` });
+    }
+    const usageRes = await pool.query(
+        `SELECT COALESCE(SUM(file_size), 0) AS total FROM risk_gov_documents WHERE company_id = $1`,
+        [req.company.id]
+    );
+    if (parseInt(usageRes.rows[0].total, 10) + bytes > RGD_QUOTA_BYTES) {
+        return res.status(400).json({ error: 'Company storage quota exceeded (500 MB). Please delete old documents before uploading new ones.' });
+    }
+    const scan = await scanFile(file_name, mime_type || 'application/octet-stream', file_data);
+    if (!scan.safe) return res.status(400).json({ error: `File rejected: ${scan.reason}` });
+
     // Get the current latest record
     const current = await pool.query(
         'SELECT * FROM risk_gov_documents WHERE id = $1 AND company_id = $2 AND is_latest = true',
@@ -12390,25 +12412,29 @@ app.post('/api/risk-gov/documents/:id/version', requireRole(...RGD_ROLES), async
     // Insert new version
     const r = await pool.query(
         `INSERT INTO risk_gov_documents
-           (company_id, category_id, doc_id, version, title, description, file_name, file_size, gcs_path, uploaded_by, is_latest)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)
-         RETURNING *`,
+           (company_id, category_id, doc_id, version, title, description, file_name, file_size, mime_type, file_data, uploaded_by, is_latest)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, true)
+         RETURNING id, company_id, category_id, doc_id, version, title, description, file_name, file_size, mime_type, uploaded_by, uploaded_at, is_latest`,
         [req.company.id, prev.category_id, prev.doc_id, prev.version + 1,
          prev.title, description?.trim() ?? prev.description,
-         file_name, file_size || null, gcs_path, req.user.id]
+         file_name, bytes, mime_type || null, file_data, req.user.id]
     );
     res.status(201).json(r.rows[0]);
 }));
 
-// GET /api/risk-gov/documents/:id/download — signed read URL
+// GET /api/risk-gov/documents/:id/download — streams the file directly from Postgres
 app.get('/api/risk-gov/documents/:id/download', requireRole(...RGD_ROLES), asyncHandler(async (req, res) => {
     const r = await pool.query(
-        'SELECT gcs_path, file_name FROM risk_gov_documents WHERE id = $1 AND company_id = $2',
+        'SELECT file_name, mime_type, file_data FROM risk_gov_documents WHERE id = $1 AND company_id = $2',
         [parseInt(req.params.id, 10), req.company.id]
     );
     if (!r.rows.length) return res.status(404).json({ error: 'Document not found' });
-    const url = await getSignedReadUrl(r.rows[0].gcs_path, 15);
-    res.json({ url, file_name: r.rows[0].file_name });
+    const { file_name, mime_type, file_data } = r.rows[0];
+    if (!file_data) return res.status(404).json({ error: 'File data not available for this document.' });
+    const buf = Buffer.from(file_data, 'base64');
+    res.set('Content-Type', mime_type || 'application/octet-stream');
+    res.set('Content-Disposition', `attachment; filename="${file_name}"`);
+    res.send(buf);
 }));
 
 // GET /api/risk-gov/documents/:id/versions — all versions of a document
@@ -12438,14 +12464,6 @@ app.delete('/api/risk-gov/documents/:id', requireRole(...RGD_ROLES), asyncHandle
         [docDbId, req.company.id]
     );
     if (!doc.rows.length) return res.status(404).json({ error: 'Document not found' });
-    // Delete all versions from GCS then DB
-    const allVersions = await pool.query(
-        'SELECT gcs_path FROM risk_gov_documents WHERE company_id = $1 AND doc_id = $2',
-        [req.company.id, doc.rows[0].doc_id]
-    );
-    for (const v of allVersions.rows) {
-        try { await deleteObject(v.gcs_path); } catch (_) { /* ignore missing files */ }
-    }
     await pool.query(
         'DELETE FROM risk_gov_documents WHERE company_id = $1 AND doc_id = $2',
         [req.company.id, doc.rows[0].doc_id]

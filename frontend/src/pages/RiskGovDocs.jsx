@@ -27,6 +27,17 @@ function fmtDate(iso) {
     return new Date(iso).toLocaleDateString('en-CA');
 }
 
+const MAX_BYTES = 10 * 1024 * 1024; // 10MB — must match server.js RGD_MAX_BYTES
+
+function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+        reader.onerror = () => reject(new Error('Could not read file.'));
+        reader.readAsDataURL(file);
+    });
+}
+
 // ── Upload Modal ──────────────────────────────────────────────────────────────
 function UploadModal({ categories, existingDoc, onClose, onUploaded }) {
     const { api } = useAuth();
@@ -44,30 +55,20 @@ function UploadModal({ categories, existingDoc, onClose, onUploaded }) {
         e.preventDefault();
         if (!file) return setError('Please select a file.');
         if (!ALLOWED_TYPES.includes(file.type)) return setError('File type not supported. Use PDF, Word, Excel, PowerPoint, or image files.');
+        if (file.size > MAX_BYTES) return setError(`File too large (${(file.size / (1024 * 1024)).toFixed(1)}MB). Maximum is 10MB.`);
         setUploading(true);
         setError('');
         try {
-            // 1. Get signed upload URL
-            setProgress('Requesting upload URL…');
-            const { url, gcsPath } = await api.post('/risk-gov/upload-url', {
-                filename: file.name,
-                contentType: file.type,
-            });
-            // 2. Upload directly to GCS
-            setProgress('Uploading file…');
-            const uploadRes = await fetch(url, {
-                method: 'PUT',
-                headers: { 'Content-Type': file.type },
-                body: file,
-            });
-            if (!uploadRes.ok) throw new Error('Upload to storage failed.');
-            // 3. Save record
-            setProgress('Saving record…');
+            // 1. Read the file as base64 in the browser
+            setProgress('Reading file…');
+            const file_data = await fileToBase64(file);
+            // 2. Send file + metadata directly to the server, stored in Postgres
+            setProgress('Uploading…');
             if (isVersion) {
                 await api.post(`/risk-gov/documents/${existingDoc.id}/version`, {
                     file_name: file.name,
-                    file_size: file.size,
-                    gcs_path: gcsPath,
+                    mime_type: file.type,
+                    file_data,
                     description,
                 });
             } else {
@@ -76,8 +77,8 @@ function UploadModal({ categories, existingDoc, onClose, onUploaded }) {
                     title: title.trim(),
                     description,
                     file_name: file.name,
-                    file_size: file.size,
-                    gcs_path: gcsPath,
+                    mime_type: file.type,
+                    file_data,
                 });
             }
             onUploaded();
@@ -331,20 +332,14 @@ export default function RiskGovDocs() {
         }
     }
 
-    async function handleDownload(docId, fileName) {
-        try {
-            const { url } = await api.get(`/risk-gov/documents/${docId}/download`);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = fileName;
-            a.target = '_blank';
-            a.rel = 'noopener noreferrer';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-        } catch (e) {
-            alert('Could not generate download link.');
-        }
+    function handleDownload(docId, fileName) {
+        // File is streamed directly from the server (Content-Disposition: attachment).
+        const a = document.createElement('a');
+        a.href = `/api/risk-gov/documents/${docId}/download`;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
     }
 
     const filtered = filterCat === 'all'
