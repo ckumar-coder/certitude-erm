@@ -13,6 +13,17 @@ const AuthContext = createContext(null);
 
 const WARNING_BEFORE_MS = 60 * 1000; // show "you're about to be logged out" 60s before timeout
 
+// True when running as a standalone window (macOS "Add to Dock", iOS/Android
+// "Add to Home Screen", or an installed PWA) rather than a regular browser tab.
+// `display-mode: standalone` is the standard check; `navigator.standalone` is
+// the older iOS Safari-specific flag, kept as a fallback.
+function isStandaloneApp() {
+    return (
+        (typeof window.matchMedia === 'function' && window.matchMedia('(display-mode: standalone)').matches) ||
+        window.navigator.standalone === true
+    );
+}
+
 export function AuthProvider({ children }) {
     // Session is the source of truth — no token stored in JS (httpOnly cookie handles that).
     const [session, setSession] = useState(null); // { user, companies, activeCompanyId, idleTimeoutMinutes, passwordExpired }
@@ -158,6 +169,14 @@ export function AuthProvider({ children }) {
             // ignore -- we're logging out regardless
         }
         handleUnauthorized();
+        // In the standalone Dock/Home Screen window, closing after logout is
+        // the friendlier behaviour -- there's no tab strip to "go back" to,
+        // so an empty logged-out window would otherwise just sit there.
+        // window.close() is a no-op (silently fails) in a regular browser
+        // tab, which is the correct fallback there.
+        if (isStandaloneApp()) {
+            window.close();
+        }
     }
 
     async function changePassword(currentPassword, newPassword) {
