@@ -126,7 +126,7 @@ function MfaSetupScreen({ branding }) {
                 Set Up Two-Factor Authentication
             </h3>
             <p style={{ fontSize: 13, color: '#444', marginBottom: 12 }}>
-                GRC Workstation requires MFA for all accounts. Scan the QR code below
+                Qatar Post GRC Workstation requires MFA for all accounts. Scan the QR code below
                 with <strong>Google Authenticator</strong>, <strong>Authy</strong>, or any
                 TOTP-compatible app, then enter the 6-digit code to confirm.
             </p>

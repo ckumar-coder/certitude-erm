@@ -67,7 +67,7 @@ export default function WhatsNew({ onClose }) {
                             What&apos;s New
                         </h2>
                         <div className="text-muted" style={{ fontSize: 12, marginTop: 3 }}>
-                            GRC Workstation — recent updates
+                            Qatar Post GRC Workstation — recent updates
                         </div>
                     </div>
                     <button

@@ -128,7 +128,7 @@ const T = {
     log_out:                     { en: 'Log out',                                    ar: 'تسجيل الخروج' },
 
     // ── Login ─────────────────────────────────────────────────────────────────
-    login_subtitle:      { en: 'GRC Workstation',        ar: 'محطة عمل GRC' },
+    login_subtitle:      { en: 'Qatar Post GRC Workstation',        ar: 'محطة عمل GRC - بريد قطر' },
     login_email:         { en: 'Email',                  ar: 'البريد الإلكتروني' },
     login_password:      { en: 'Password',               ar: 'كلمة المرور' },
     login_sign_in:       { en: 'Sign in',                ar: 'تسجيل الدخول' },
