@@ -22,7 +22,12 @@ function addQpMaster(pptx, { primary, logoUrl, company, footerLabel }) {
         { text: { text: footerLabel, options: { x: 4.9, y: 7.18, w: 4.5, h: 0.28, fontSize: 8, color: '94A3B8', align: 'center' } } },
     ];
     if (logoUrl) {
-        objects.push({ image: { path: logoUrl, x: 0.4, y: 0.3, w: 1.5, h: 0.5, sizing: { type: 'contain', w: 1.5, h: 0.5 } } });
+        // branding_logo_url can be either an external URL or a data: URI (see
+        // server.js) — pptxgenjs needs `path` for the former and `data` for the
+        // latter; passing a data: URI as `path` makes it try (and fail) an XHR
+        // fetch instead of embedding the image directly.
+        const imgSrc = logoUrl.startsWith('data:') ? { data: logoUrl } : { path: logoUrl };
+        objects.push({ image: { ...imgSrc, x: 0.4, y: 0.3, w: 1.5, h: 0.5, sizing: { type: 'contain', w: 1.5, h: 0.5 } } });
     } else {
         objects.push({ text: { text: company, options: { x: 0.4, y: 0.3, w: 5, h: 0.5, fontSize: 16, bold: true, color: p } } });
     }
@@ -360,7 +365,8 @@ function AcceptedRiskReport({ onBack }) {
             const generatedBy = user?.full_name || user?.email || 'CRO';
             await buildAcceptedRiskPptx({ risks, commentary, perRisk, from, to, branding: branding?.name ? branding : activeCompany, generatedBy });
         } catch (e) {
-            setError(e.message || 'Failed to export PowerPoint');
+            console.error('PowerPoint export failed:', e);
+            setError('Failed to export PowerPoint. Please try again or contact support if this persists.');
         } finally {
             setPptxLoading(false);
         }
@@ -1011,7 +1017,8 @@ function ManagementPack({ onBack }) {
             const { data, branding } = await loadPackData();
             await buildManagementPackPptx({ data, branding, generatedBy });
         } catch (e) {
-            setError(e.message || 'Failed to export PowerPoint');
+            console.error('PowerPoint export failed:', e);
+            setError('Failed to export PowerPoint. Please try again or contact support if this persists.');
         } finally {
             setPptxLoading(false);
         }
