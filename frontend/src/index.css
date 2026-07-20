@@ -503,7 +503,7 @@ th {
   font-size: 22px;
   font-weight: 800;
   text-align: center;
-  margin-bottom: 24px;
+  margin-bottom: 20px;
   letter-spacing: -0.02em;
 }
 
@@ -517,11 +517,14 @@ th {
 }
 
 .login-subtitle {
+  background: var(--color-primary);
+  color: #ffffff;
   text-align: center;
-  color: var(--color-text-muted);
   font-size: 13px;
-  margin-top: -12px;
-  margin-bottom: 24px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 10px 20px;
+  margin: 0 -40px 24px -40px;
 }
 
 /* ---- Company picker ---- */
