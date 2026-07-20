@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { getHelp } from '../help-content';
+import { useLanguage } from '../contexts/LanguageContext';
 
 const PALETTE = [
     {
@@ -23,7 +24,8 @@ const PALETTE = [
 ];
 
 export default function HelpPanel({ page, onClose, onNavigate }) {
-    const content = getHelp(page);
+    const { lang } = useLanguage();
+    const content = getHelp(page, lang);
     const [openIdx, setOpenIdx] = useState(null);
 
     const toggle = (i) => setOpenIdx((prev) => (prev === i ? null : i));
@@ -34,7 +36,9 @@ export default function HelpPanel({ page, onClose, onNavigate }) {
             <div className="help-panel">
                 <div className="help-panel-header">
                     <span style={{ fontWeight: 700, fontSize: 15 }}>
-                        {content ? `Help — ${content.title}` : 'Help'}
+                        {content
+                            ? (lang === 'ar' ? `مساعدة — ${content.title}` : `Help — ${content.title}`)
+                            : (lang === 'ar' ? 'مساعدة' : 'Help')}
                     </span>
                     <button
                         className="btn btn-secondary btn-sm"
@@ -110,14 +114,16 @@ export default function HelpPanel({ page, onClose, onNavigate }) {
                     ) : (
                         <div style={{ padding: 16 }}>
                             <p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>
-                                No help content available for this page yet.
+                                {lang === 'ar'
+                                    ? 'لا يتوفر محتوى مساعدة لهذه الصفحة بعد.'
+                                    : 'No help content available for this page yet.'}
                             </p>
                         </div>
                     )}
 
                     <div style={{ padding: '10px 16px', borderTop: '1px solid var(--color-border)' }}>
                         <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: 0 }}>
-                            Need more help? Contact{' '}
+                            {lang === 'ar' ? 'هل تحتاج إلى مزيد من المساعدة؟ تواصل عبر' : 'Need more help? Contact'}{' '}
                             <a href="mailto:c.kumar@certitude-advisory.ca">
                                 c.kumar@certitude-advisory.ca
                             </a>
