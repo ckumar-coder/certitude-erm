@@ -163,20 +163,26 @@ export function AuthProvider({ children }) {
     }
 
     async function logout() {
+        // window.close() is only permitted while "user activation" from the
+        // click that triggered this is still fresh -- it expires quickly and
+        // does not reliably survive an awaited network round trip. So in the
+        // standalone case we close synchronously, right here in the same
+        // tick as the click, and let the /auth/logout call fire in the
+        // background rather than blocking on it first.
+        if (isStandaloneApp()) {
+            api.post('/auth/logout').catch(() => {
+                // ignore -- we're logging out regardless
+            });
+            handleUnauthorized();
+            window.close();
+            return;
+        }
         try {
             await api.post('/auth/logout');
         } catch {
             // ignore -- we're logging out regardless
         }
         handleUnauthorized();
-        // In the standalone Dock/Home Screen window, closing after logout is
-        // the friendlier behaviour -- there's no tab strip to "go back" to,
-        // so an empty logged-out window would otherwise just sit there.
-        // window.close() is a no-op (silently fails) in a regular browser
-        // tab, which is the correct fallback there.
-        if (isStandaloneApp()) {
-            window.close();
-        }
     }
 
     async function changePassword(currentPassword, newPassword) {
