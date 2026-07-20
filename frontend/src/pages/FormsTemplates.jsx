@@ -462,6 +462,30 @@ function buildManagementPackHtml({ data, branding, generatedBy }) {
         <div style="flex:1;height:1px;background:#e2e8f0"></div>
     </div>`;
 
+    // Branded letterhead — sits in the outer <thead>, so browsers repeat it on
+    // every printed page (the standard trick for running headers with window.print(),
+    // since @page margin boxes like @top-center aren't supported by Chrome/Safari).
+    const letterhead = `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid ${primary};padding-bottom:14px;margin-bottom:18px">
+        <div>
+            ${logoUrl ? `<img src="${logoUrl}" style="max-height:44px;max-width:170px;object-fit:contain" alt="${company}"/>` : `<div style="font-size:18px;font-weight:800;color:${primary}">${company}</div>`}
+        </div>
+        <div style="text-align:right">
+            <div style="font-size:16px;font-weight:800;color:${primary}">Risk Management Pack</div>
+            <div style="font-size:11px;color:#64748b;margin-top:2px">Prepared by: ${generatedBy} &nbsp;|&nbsp; Generated: ${today}</div>
+        </div>
+    </div>`;
+
+    // Branded footer — sits in the outer <tfoot>, so it repeats on every page too.
+    // No fabricated "Page X" text here — real page counts aren't reliably available
+    // to page-level CSS/JS in Chrome/Safari print (see note left for future readers).
+    const letterfoot = `
+    <div style="margin-top:14px;padding-top:10px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;font-size:9px;color:#94a3b8">
+        <span>CONFIDENTIAL — ${company}</span>
+        <span>Risk Management Pack</span>
+        <span>Generated: ${today}</span>
+    </div>`;
+
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -469,10 +493,12 @@ function buildManagementPackHtml({ data, branding, generatedBy }) {
 <title>Risk Management Pack — ${company} — ${today}</title>
 <style>
 * { box-sizing:border-box; margin:0; padding:0; }
-body { font-family:'Segoe UI',Arial,sans-serif; color:#1e293b; background:#fff; padding:48px 56px; }
+body { font-family:'Segoe UI',Arial,sans-serif; color:#1e293b; background:#fff; padding:28px 32px; }
 @media print {
-    body { padding:20px 28px; }
-    @page { margin:16mm 14mm; size:A4 portrait; }
+    body { padding:10px 14px; }
+    /* Landscape gives a wider page for the heatmap/tables — the standard
+       orientation for a board-style risk pack. */
+    @page { margin:12mm 12mm; size:A4 landscape; }
     .no-break { page-break-inside:avoid; }
     .page-break { page-break-before:always; }
 }
@@ -481,21 +507,22 @@ thead tr { background:${primary}; color:#fff; }
 thead th { padding:9px 8px; text-align:left; font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; }
 tbody tr:nth-child(even) { background:#f8fafc; }
 .footer { margin-top:32px; padding-top:14px; border-top:1px solid #e2e8f0; display:flex; justify-content:space-between; font-size:10px; color:#94a3b8; }
+/* Outer page-wrap table: its <thead>/<tfoot> are what browsers repeat on every
+   printed page — this is how the letterhead and footer follow the report across
+   pages instead of only appearing once at the very top/bottom. Reset the generic
+   thead/tbody styling above (meant for the data tables) so it doesn't paint the
+   letterhead/footer navy as well. */
+.page-wrap { border-collapse:collapse; }
+.page-wrap > thead > tr, .page-wrap > tfoot > tr, .page-wrap > tbody > tr { background:transparent; color:inherit; }
+.page-wrap > thead > tr > td, .page-wrap > tfoot > tr > td, .page-wrap > tbody > tr > td { padding:0; background:transparent; }
 </style>
 </head>
 <body>
 
-<!-- ── Cover / Letterhead ───────────────────────────────────────────────── -->
-<div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid ${primary};padding-bottom:20px;margin-bottom:28px">
-    <div>
-        ${logoUrl ? `<img src="${logoUrl}" style="max-height:56px;max-width:200px;object-fit:contain" alt="${company}"/>` : `<div style="font-size:22px;font-weight:800;color:${primary}">${company}</div>`}
-    </div>
-    <div style="text-align:right">
-        <div style="font-size:20px;font-weight:800;color:${primary}">Risk Management Pack</div>
-        <div style="font-size:12px;color:#64748b;margin-top:4px">Prepared by: ${generatedBy}</div>
-        <div style="font-size:12px;color:#64748b;margin-top:2px">Generated: ${today}</div>
-    </div>
-</div>
+<table class="page-wrap">
+<thead><tr><td>${letterhead}</td></tr></thead>
+<tfoot><tr><td>${letterfoot}</td></tr></tfoot>
+<tbody><tr><td>
 
 <!-- ── Executive Summary ─────────────────────────────────────────────────── -->
 ${header('Executive Summary')}
@@ -613,12 +640,8 @@ ${header('Issues Summary')}
     }).join('')}
 </div>
 
-<!-- ── Footer ────────────────────────────────────────────────────────────── -->
-<div class="footer">
-    <span>CONFIDENTIAL — ${company}</span>
-    <span>Risk Management Pack</span>
-    <span>Generated: ${today}</span>
-</div>
+</td></tr></tbody>
+</table>
 
 <script>window.onload = () => window.print();</script>
 </body>
