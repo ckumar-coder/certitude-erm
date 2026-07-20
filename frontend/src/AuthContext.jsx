@@ -167,12 +167,13 @@ export function AuthProvider({ children }) {
         // click that triggered this is still fresh -- it expires quickly and
         // does not reliably survive an awaited network round trip. So in the
         // standalone case we close synchronously, right here in the same
-        // tick as the click, and let the /auth/logout call fire in the
-        // background rather than blocking on it first.
+        // tick as the click. The /auth/logout call itself must use
+        // postBeacon (fetch keepalive), not a plain awaited call -- closing
+        // the window immediately after would otherwise abort a normal fetch
+        // mid-flight, so the server never clears the session or cookie, and
+        // the next launch silently re-authenticates instead of showing login.
         if (isStandaloneApp()) {
-            api.post('/auth/logout').catch(() => {
-                // ignore -- we're logging out regardless
-            });
+            api.postBeacon('/auth/logout');
             handleUnauthorized();
             window.close();
             return;

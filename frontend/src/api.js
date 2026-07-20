@@ -47,6 +47,21 @@ export function createApiClient(getToken, onUnauthorized) {
         put: (path, data) => request(path, { method: 'PUT', body: JSON.stringify(data ?? {}) }),
         patch: (path, data) => request(path, { method: 'PATCH', body: JSON.stringify(data ?? {}) }),
         delete: (path, data) => request(path, { method: 'DELETE', ...(data ? { body: JSON.stringify(data) } : {}) }),
+        // Fire-and-forget POST that's guaranteed to actually reach the server
+        // even if the page/window is torn down immediately after (keepalive
+        // survives navigation/close, unlike a plain fetch). Used for logout
+        // in the standalone Dock window, where we call window.close() right
+        // after firing this -- without keepalive the request gets aborted
+        // mid-flight and the server never clears the session/cookie.
+        postBeacon: (path) => {
+            const token = getToken?.();
+            fetch(BASE + path, {
+                method: 'POST',
+                credentials: 'include',
+                keepalive: true,
+                headers: token ? { Authorization: `Bearer ${token}` } : {},
+            }).catch(() => {});
+        },
         // For CSV downloads (H1 templates, H6 exports) -- returns the raw
         // response so the caller can trigger a browser download.
         getBlob: async (path) => {
