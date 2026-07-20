@@ -33,12 +33,6 @@ export default function About() {
                 Advisory as a proprietary client delivery tool.
             </p>
 
-            <h3>Support &amp; Feedback</h3>
-            <p>
-                For support, questions, or to report an issue, contact:{' '}
-                <a href="mailto:c.kumar@certitude-advisory.ca">c.kumar@certitude-advisory.ca</a>
-            </p>
-
             <h3>Technology</h3>
             <p>
                 Hosted on Qatar Post's own infrastructure and maintained by Qatar Post IT. All data
