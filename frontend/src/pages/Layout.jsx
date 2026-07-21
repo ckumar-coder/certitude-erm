@@ -316,7 +316,7 @@ export default function Layout({ page, onNavigate, children, groupView }) {
                     </div>
                     {appVersion && (
                         <div className="text-muted" style={{ padding: '0 8px', fontSize: 11 }}>
-                            Qatar Post GRC Workstation — {appVersion}
+                            Qatar Post ERM Workstation — {appVersion}
                         </div>
                     )}
                     <button

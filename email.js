@@ -149,10 +149,10 @@ async function sendTestEmail(companyId, toEmail) {
     await transport.sendMail({
         from: cfg.from_name ? `"${cfg.from_name}" <${cfg.from_email}>` : cfg.from_email,
         to: toEmail,
-        subject: 'GRC Workstation — Email Configuration Test',
-        html: `<p>This is a test email confirming that your SMTP settings for <strong>GRC Workstation</strong> are working correctly.</p>
+        subject: 'ERM Workstation — Email Configuration Test',
+        html: `<p>This is a test email confirming that your SMTP settings for <strong>ERM Workstation</strong> are working correctly.</p>
                <p>You can now use this email account to send system notifications.</p>`,
-        text: 'This is a test email confirming that your SMTP settings for GRC Workstation are working correctly.',
+        text: 'This is a test email confirming that your SMTP settings for ERM Workstation are working correctly.',
     });
 
     // Mark as verified
@@ -167,7 +167,7 @@ async function sendTestEmail(companyId, toEmail) {
 async function sendTempPassword(companyId, { toEmail, toName, tempPassword, loginUrl }) {
     const html = `
 <p>Hello ${toName || 'there'},</p>
-<p>An account has been created for you on <strong>GRC Workstation</strong>.</p>
+<p>An account has been created for you on <strong>ERM Workstation</strong>.</p>
 <p><strong>Login URL:</strong> <a href="${loginUrl}">${loginUrl}</a><br/>
    <strong>Email:</strong> ${toEmail}<br/>
    <strong>Temporary password:</strong> <code>${tempPassword}</code></p>
@@ -175,11 +175,11 @@ async function sendTempPassword(companyId, { toEmail, toName, tempPassword, logi
 <p>This email was sent automatically. If you did not expect this, please contact your GRC administrator.</p>
     `.trim();
 
-    const text = `Hello ${toName || 'there'},\n\nAn account has been created for you on GRC Workstation.\n\nLogin URL: ${loginUrl}\nEmail: ${toEmail}\nTemporary password: ${tempPassword}\n\nYou will be prompted to change your password on first login.`;
+    const text = `Hello ${toName || 'there'},\n\nAn account has been created for you on ERM Workstation.\n\nLogin URL: ${loginUrl}\nEmail: ${toEmail}\nTemporary password: ${tempPassword}\n\nYou will be prompted to change your password on first login.`;
 
     return sendEmail(companyId, {
         to: toEmail,
-        subject: 'Your GRC Workstation account',
+        subject: 'Your ERM Workstation account',
         html,
         text,
     });
@@ -189,17 +189,17 @@ async function sendTempPassword(companyId, { toEmail, toName, tempPassword, logi
 async function sendPasswordResetEmail(companyId, { toEmail, toName, resetUrl }) {
     const html = `
 <p>Hello ${toName || 'there'},</p>
-<p>A password reset was requested for your <strong>GRC Workstation</strong> account.</p>
+<p>A password reset was requested for your <strong>ERM Workstation</strong> account.</p>
 <p><a href="${resetUrl}" style="padding:10px 20px;background:#1F3964;color:#fff;text-decoration:none;border-radius:4px;">Reset my password</a></p>
 <p>Or copy this link: <a href="${resetUrl}">${resetUrl}</a></p>
 <p>This link expires in <strong>60 minutes</strong>. If you did not request a reset, you can safely ignore this email.</p>
     `.trim();
 
-    const text = `Hello ${toName || 'there'},\n\nA password reset was requested for your GRC Workstation account.\n\nReset link (expires in 60 minutes):\n${resetUrl}\n\nIf you did not request a reset, you can safely ignore this email.`;
+    const text = `Hello ${toName || 'there'},\n\nA password reset was requested for your ERM Workstation account.\n\nReset link (expires in 60 minutes):\n${resetUrl}\n\nIf you did not request a reset, you can safely ignore this email.`;
 
     return sendEmail(companyId, {
         to: toEmail,
-        subject: 'Reset your GRC Workstation password',
+        subject: 'Reset your ERM Workstation password',
         html,
         text,
     });
@@ -226,20 +226,20 @@ async function sendSecurityAlert(user, event, details = {}) {
 
     const html = `
         <p>Hi ${user.full_name || user.email},</p>
-        <p>A security event was recorded on your GRC Workstation account:</p>
+        <p>A security event was recorded on your ERM Workstation account:</p>
         <table style="border-collapse:collapse;margin:16px 0;">
             <tr><td style="padding:4px 12px 4px 0;color:#666;">Event</td><td><strong>${label}</strong></td></tr>
             <tr><td style="padding:4px 12px 4px 0;color:#666;">Time</td><td>${when}</td></tr>
             ${details.attempts ? `<tr><td style="padding:4px 12px 4px 0;color:#666;">Failed attempts</td><td>${details.attempts}</td></tr>` : ''}
         </table>
         <p>If this was not you, please contact your GRC administrator immediately.</p>
-        <p style="color:#666;font-size:12px;">GRC Workstation — automated security notification</p>
+        <p style="color:#666;font-size:12px;">ERM Workstation — automated security notification</p>
     `;
     const text = `Security event: ${label}\nTime: ${when}\nIf this was not you, contact your administrator.`;
 
     return sendEmail(companyId, {
         to: user.email,
-        subject: `GRC Workstation Security Alert: ${label}`,
+        subject: `ERM Workstation Security Alert: ${label}`,
         html,
         text,
     });

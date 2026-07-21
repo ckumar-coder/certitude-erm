@@ -1,7 +1,7 @@
 {
-  "name": "Qatar Post GRC Workstation",
-  "short_name": "QPost GRC",
-  "description": "Qatar Post GRC Workstation — governance, risk, and compliance management platform.",
+  "name": "Qatar Post ERM Workstation",
+  "short_name": "QPost ERM",
+  "description": "Qatar Post ERM Workstation — governance, risk, and compliance management platform.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

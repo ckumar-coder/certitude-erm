@@ -1,7 +1,7 @@
 {
-  "name": "grc-workstation",
-  "version": "2.42.27",
-  "description": "GRC Workstation -- v2.42.27 (Certitude Advisory Services)",
+  "name": "erm-workstation",
+  "version": "2.42.28",
+  "description": "ERM Workstation -- v2.42.28 (Certitude Advisory Services)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

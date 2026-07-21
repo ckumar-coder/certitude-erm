@@ -117,10 +117,10 @@ export default function Branding() {
                             {logoDataUri ? (
                                 <img src={logoDataUri} alt="Logo preview" className="login-logo" />
                             ) : (
-                                <>🔒 GRC Framework Gateway</>
+                                <>🔒 ERM Framework Gateway</>
                             )}
                         </div>
-                        {logoDataUri && <div className="login-subtitle">{branding?.name} — GRC Workstation</div>}
+                        {logoDataUri && <div className="login-subtitle">{branding?.name} — ERM Workstation</div>}
                         <button type="button" className="btn btn-primary" style={{ width: '100%', background: color, borderColor: color }}>
                             Sign in
                         </button>

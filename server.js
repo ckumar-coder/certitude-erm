@@ -280,8 +280,8 @@ function verifyTotp(secret, token) {
 }
 
 function totpUri(secret, email) {
-    const label  = encodeURIComponent(`GRC Workstation:${email}`);
-    const issuer = encodeURIComponent('GRC Workstation');
+    const label  = encodeURIComponent(`ERM Workstation:${email}`);
+    const issuer = encodeURIComponent('ERM Workstation');
     return `otpauth://totp/${label}?secret=${secret}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`;
 }
 
@@ -10603,4 +10603,4 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 GRC Workstation (v2, multi-tenant) running on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 ERM Workstation (v2, multi-tenant) running on port ${PORT}`));

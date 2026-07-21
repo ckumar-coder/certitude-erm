@@ -173,7 +173,7 @@ export default function SetupWizard() {
                     <div className="login-title">
                         <img src={certitudeLogo} alt="Certitude Advisory Services" className="login-logo" />
                     </div>
-                    <div className="login-subtitle">Qatar Post GRC Workstation</div>
+                    <div className="login-subtitle">Qatar Post ERM Workstation</div>
                     <div style={{ textAlign: 'center', margin: '32px 0 24px' }}>
                         <div style={{
                             width: 64, height: 64, borderRadius: '50%', background: 'var(--primary)',
@@ -185,7 +185,7 @@ export default function SetupWizard() {
                             </svg>
                         </div>
                         <h2 style={{ fontSize: 22, fontWeight: 700, color: 'var(--text)', margin: '0 0 12px' }}>
-                            Welcome to Qatar Post GRC Workstation
+                            Welcome to Qatar Post ERM Workstation
                         </h2>
                         <p style={{ color: 'var(--text-muted)', lineHeight: 1.6, margin: 0 }}>
                             Your account is ready. Let's set up your organization so you can start managing risk, compliance, and governance.

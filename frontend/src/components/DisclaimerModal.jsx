@@ -22,7 +22,7 @@ export default function DisclaimerModal() {
                 </div>
                 <div className="disclaimer-body">
                     <p>
-                        Qatar Post GRC Workstation is a software tool designed to assist in organizing and documenting
+                        Qatar Post ERM Workstation is a software tool designed to assist in organizing and documenting
                         governance, risk, and compliance activities. It does not constitute legal,
                         regulatory, accounting, or professional advice of any kind.
                     </p>
