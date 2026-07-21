@@ -327,7 +327,7 @@ const T = {
 
     // ── Org Roles (RACI) ──────────────────────────────────────────────────────
     org_roles_title:      { en: 'Org Roles (RACI)',                ar: 'الأدوار التنظيمية (RACI)' },
-    org_roles_subtitle:   { en: 'Define responsibilities across GRC processes.', ar: 'تحديد المسؤوليات عبر عمليات GRC.' },
+    org_roles_subtitle:   { en: 'Define responsibilities across ERM processes.', ar: 'تحديد المسؤوليات عبر عمليات ERM.' },
     responsible:          { en: 'Responsible',                     ar: 'المسؤول' },
     accountable:          { en: 'Accountable',                     ar: 'المساءَل' },
     consulted:            { en: 'Consulted',                       ar: 'المستشار' },
@@ -342,7 +342,7 @@ const T = {
 
     // ── My Tasks ──────────────────────────────────────────────────────────────
     tasks_title:          { en: 'My Tasks',                        ar: 'مهامي' },
-    tasks_subtitle:       { en: 'Action items assigned to you across all GRC modules.', ar: 'بنود الإجراءات المُسنَدة إليك عبر جميع وحدات GRC.' },
+    tasks_subtitle:       { en: 'Action items assigned to you across all ERM modules.', ar: 'بنود الإجراءات المُسنَدة إليك عبر جميع وحدات ERM.' },
     no_tasks:             { en: 'No tasks pending.',               ar: 'لا توجد مهام معلقة.' },
     tasks_risks:          { en: 'Risks Awaiting Action',           ar: 'المخاطر في انتظار الإجراء' },
     tasks_issues:         { en: 'Issues Awaiting Action',          ar: 'القضايا في انتظار الإجراء' },
@@ -351,7 +351,7 @@ const T = {
 
     // ── Management Summary ────────────────────────────────────────────────────
     summary_title:           { en: 'Dashboard',                ar: 'لوحة القيادة' },
-    summary_subtitle:        { en: 'Executive overview of the GRC posture.', ar: 'نظرة تنفيذية على وضع GRC.' },
+    summary_subtitle:        { en: 'Executive overview of the ERM posture.', ar: 'نظرة تنفيذية على وضع ERM.' },
     total_risks:             { en: 'Total Risks',              ar: 'إجمالي المخاطر' },
     open_risks:              { en: 'Open Risks',               ar: 'المخاطر المفتوحة' },
     critical_risks:          { en: 'Critical Risks',           ar: 'المخاطر الحرجة' },
@@ -444,7 +444,7 @@ const T = {
     critical_risks_subtitle: { en: 'Risks rated Critical requiring escalated attention.', ar: 'المخاطر المصنفة حرجة والتي تتطلب اهتماماً مُصعَّداً.' },
 
     // ── Glossary ──────────────────────────────────────────────────────────────
-    glossary_title:        { en: 'GRC Glossary',                                     ar: 'مسرد GRC' },
+    glossary_title:        { en: 'ERM Glossary',                                     ar: 'مسرد ERM' },
     glossary_subtitle:     { en: 'Plain-language definitions for risk management and compliance terms used throughout the application.', ar: 'تعريفات بسيطة للمصطلحات المستخدمة في إدارة المخاطر والامتثال عبر التطبيق.' },
     glossary_subtitle_admin: { en: ' Admins can add organisation-specific terms.',   ar: ' يمكن للمسؤولين إضافة مصطلحات خاصة بالمؤسسة.' },
     glossary_search_ph:    { en: 'Search terms…',                                    ar: 'ابحث في المصطلحات…' },
