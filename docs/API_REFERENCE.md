@@ -58,6 +58,22 @@ auto-expand rule inside `requireRole()` itself.
 | GET | `/api/users/risk-owners` | Admin, Risk Manager, Risk Champion, Risk Owner, CRO, Consultant CRO, Viewer |
 | POST | `/api/users/:id/active` | Admin |
 
+## Roles & Permissions (Phase B of the admin-configurable permissions engine)
+
+Admin screen for the `roles` / `capabilities` / `role_permissions` tables seeded in
+Phase A (`schema_v75_permissions_engine.sql`). **Additive only as of Phase B** —
+nothing here is consulted by `requireRole()` or any `canX` flag yet; these routes
+let Admin see and edit the model ahead of enforcement, which is Phase C/D. See
+`Documents/Internal/RBAC_Permissions_Engine_Scoping.docx` Section 9.
+
+| Method | Path | Role |
+|---|---|---|
+| GET | `/api/roles` | Admin |
+| POST | `/api/roles` | Admin — creates a custom role, name only, starts at zero permissions |
+| GET | `/api/capabilities` | Admin — full catalogue, including non-configurable safety baselines |
+| GET | `/api/roles/:id/permissions` | Admin — one role's scope per capability |
+| PUT | `/api/roles/:id/permissions` | Admin — bulk save; server enforces the lockout guardrail (refuses to zero out `users.manage`/`roles.manage` company-wide) and writes to the Audit Log |
+
 ## Risk Register & Mitigation
 
 | Method | Path | Role |

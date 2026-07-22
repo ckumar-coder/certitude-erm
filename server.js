@@ -41,6 +41,9 @@
 //   Global Search                   — /api/search
 //   Escalation Rules & Notifications — /api/escalation-rules, /api/notifications
 //   Users & Access                  — /api/users/*  (Admin)
+//   Roles & Permissions (Phase B)   — /api/roles/*, /api/capabilities  (Admin) —
+//                                     admin screen for the permissions engine;
+//                                     additive only, not yet enforced (Phase C/D)
 //   Glossary                        — /api/glossary
 //   Compliance Calendar             — /api/calendar
 //   Scoring Methodology             — /api/scoring-methodology
@@ -4900,6 +4903,252 @@ app.post(
         });
 
         res.json(updated.rows[0]);
+    })
+);
+
+// ============================================================
+// Roles & Permissions -- Phase B of the admin-configurable permissions
+// engine (see Documents/Internal/RBAC_Permissions_Engine_Scoping.docx
+// Section 9). Reads/writes the roles/capabilities/role_permissions tables
+// seeded in Phase A (schema_v75_permissions_engine.sql). Additive only --
+// per the phased plan, nothing here is consulted by requireRole() or any
+// canX flag yet; that cutover is Phase C/D. This is purely the admin
+// screen so Qatar Post can see and edit the model ahead of enforcement.
+// Admin-only, gated the same way as every other admin route today
+// (requireRole('Admin') -- not yet routed through the engine itself).
+// ============================================================
+
+// GET /api/roles -- built-in roles (company_id IS NULL) plus this
+// company's own custom roles, if any exist yet.
+app.get(
+    '/api/roles',
+    requireRole('Admin'),
+    asyncHandler(async (req, res) => {
+        const result = await pool.query(
+            `SELECT id, name, is_builtin, company_id
+             FROM roles
+             WHERE company_id IS NULL OR company_id = $1
+             ORDER BY is_builtin DESC, name`,
+            [req.company.id]
+        );
+        res.json(result.rows);
+    })
+);
+
+// POST /api/roles -- create a custom role, name only. Seeded with zero
+// permissions by construction (no role_permissions rows are created) --
+// nothing is ever accidentally over-granted (Section 9.1).
+app.post(
+    '/api/roles',
+    requireRole('Admin'),
+    asyncHandler(async (req, res) => {
+        const name = (req.body.name || '').trim();
+        if (!name) return res.status(400).json({ error: 'name is required' });
+        if (name.length > 100) return res.status(400).json({ error: 'name must be 100 characters or fewer' });
+
+        const clash = await pool.query(
+            `SELECT 1 FROM roles WHERE lower(name) = lower($1) AND (company_id IS NULL OR company_id = $2)`,
+            [name, req.company.id]
+        );
+        if (clash.rows.length > 0) {
+            return res.status(409).json({ error: `A role named "${name}" already exists.` });
+        }
+
+        const inserted = await pool.query(
+            `INSERT INTO roles (company_id, name, is_builtin) VALUES ($1, $2, false) RETURNING id, name, is_builtin, company_id`,
+            [req.company.id, name]
+        );
+
+        await logAudit(null, {
+            companyId: req.company.id,
+            entityType: 'role',
+            entityId: inserted.rows[0].id,
+            action: 'created',
+            actor: req.user,
+            details: { name },
+        });
+
+        res.status(201).json(inserted.rows[0]);
+    })
+);
+
+// GET /api/capabilities -- the full seeded catalogue (both configurable
+// and non-configurable baseline capabilities -- see is_baseline). This
+// list itself is not editable from the admin screen (Section 9.1); it
+// only changes when the application gains or removes a real feature.
+app.get(
+    '/api/capabilities',
+    requireRole('Admin'),
+    asyncHandler(async (req, res) => {
+        const result = await pool.query(
+            `SELECT key, module, label, supports_scope, is_baseline FROM capabilities ORDER BY module, key`
+        );
+        res.json(result.rows);
+    })
+);
+
+// GET /api/roles/:id/permissions -- every capability for the given role,
+// with its current scope (defaults to 'none' if no role_permissions row
+// exists yet). Baseline capabilities are included for transparency but
+// always report scope 'full' and are not meant to be edited (enforced
+// again server-side on the PUT below, not just hidden client-side).
+app.get(
+    '/api/roles/:id/permissions',
+    requireRole('Admin'),
+    asyncHandler(async (req, res) => {
+        const roleId = parseInt(req.params.id, 10);
+        const roleRes = await pool.query(
+            `SELECT id, name, is_builtin FROM roles WHERE id = $1 AND (company_id IS NULL OR company_id = $2)`,
+            [roleId, req.company.id]
+        );
+        if (roleRes.rows.length === 0) return res.status(404).json({ error: 'Role not found' });
+
+        const permRes = await pool.query(
+            `SELECT c.key, c.module, c.label, c.supports_scope, c.is_baseline,
+                    CASE WHEN c.is_baseline THEN 'full' ELSE COALESCE(rp.scope, 'none') END AS scope
+             FROM capabilities c
+             LEFT JOIN role_permissions rp ON rp.capability_key = c.key AND rp.role_id = $1
+             ORDER BY c.module, c.key`,
+            [roleId]
+        );
+
+        res.json({ role: roleRes.rows[0], permissions: permRes.rows });
+    })
+);
+
+// PUT /api/roles/:id/permissions -- bulk-save the permission grid for one
+// role. Body: { permissions: { [capability_key]: 'none'|'own'|'dept'|'full' } }
+app.put(
+    '/api/roles/:id/permissions',
+    requireRole('Admin'),
+    asyncHandler(async (req, res) => {
+        const roleId = parseInt(req.params.id, 10);
+        const incoming = req.body.permissions;
+        if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
+            return res.status(400).json({ error: 'permissions (object) is required' });
+        }
+
+        const roleRes = await pool.query(
+            `SELECT id, name, is_builtin FROM roles WHERE id = $1 AND (company_id IS NULL OR company_id = $2)`,
+            [roleId, req.company.id]
+        );
+        if (roleRes.rows.length === 0) return res.status(404).json({ error: 'Role not found' });
+        const role = roleRes.rows[0];
+
+        const capRes = await pool.query(`SELECT key, supports_scope, is_baseline FROM capabilities`);
+        const capByKey = {};
+        capRes.rows.forEach((c) => { capByKey[c.key] = c; });
+
+        const VALID_SCOPES = ['none', 'own', 'dept', 'full'];
+        const updates = {};
+        for (const [key, scope] of Object.entries(incoming)) {
+            const cap = capByKey[key];
+            if (!cap) return res.status(400).json({ error: `Unknown capability: ${key}` });
+            if (cap.is_baseline) {
+                return res.status(400).json({ error: `${key} is a non-configurable safety baseline and cannot be edited.` });
+            }
+            if (!VALID_SCOPES.includes(scope)) {
+                return res.status(400).json({ error: `Invalid scope "${scope}" for ${key}` });
+            }
+            if (!cap.supports_scope && scope !== 'none' && scope !== 'full') {
+                return res.status(400).json({ error: `${key} does not support Own/Department scoping -- use None or Full.` });
+            }
+            updates[key] = scope;
+        }
+
+        // ── Lockout guardrail (Section 9.1) ──────────────────────────────
+        // Refuse a save that would leave this company with zero active
+        // users able to reach users.manage or roles.manage -- otherwise
+        // there would be no way back into this screen. Mirrors the
+        // existing "last active Admin" protection on POST /api/users/:id/active.
+        for (const guardKey of ['users.manage', 'roles.manage']) {
+            if (!(guardKey in updates)) continue;
+            if (updates[guardKey] === 'full') continue; // being granted, not reduced -- always safe
+
+            const holders = await pool.query(
+                `SELECT DISTINCT r.id, r.name,
+                        COALESCE(rp.scope, CASE WHEN c.is_baseline THEN 'full' ELSE 'none' END) AS scope
+                 FROM roles r
+                 CROSS JOIN capabilities c
+                 LEFT JOIN role_permissions rp ON rp.role_id = r.id AND rp.capability_key = c.key
+                 WHERE c.key = $1 AND (r.company_id IS NULL OR r.company_id = $2)`,
+                [guardKey, req.company.id]
+            );
+            const effectiveScope = (rId) => {
+                if (rId === roleId) return updates[guardKey];
+                const row = holders.rows.find((h) => h.id === rId);
+                return row ? row.scope : 'none';
+            };
+            const fullRoleIds = holders.rows
+                .map((h) => h.id)
+                .filter((rId) => effectiveScope(rId) === 'full');
+
+            if (fullRoleIds.length === 0) {
+                return res.status(403).json({
+                    error: `Cannot remove ${guardKey} from ${role.name} -- no role would retain it, and there would be no way back into this screen.`,
+                });
+            }
+
+            const activeHolder = await pool.query(
+                `SELECT 1 FROM user_companies uc JOIN users u ON u.id = uc.user_id
+                 JOIN roles r ON r.name = uc.role AND (r.company_id IS NULL OR r.company_id = $2)
+                 WHERE uc.company_id = $2 AND u.is_active = true AND r.id = ANY($1::int[]) LIMIT 1`,
+                [fullRoleIds, req.company.id]
+            );
+            if (activeHolder.rows.length === 0) {
+                return res.status(403).json({
+                    error: `Cannot remove ${guardKey} from ${role.name} -- no active user in this company would still hold it.`,
+                });
+            }
+        }
+
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            const changes = {};
+            for (const [key, scope] of Object.entries(updates)) {
+                if (scope === 'none') {
+                    await client.query(
+                        `DELETE FROM role_permissions WHERE role_id = $1 AND capability_key = $2`,
+                        [roleId, key]
+                    );
+                } else {
+                    await client.query(
+                        `INSERT INTO role_permissions (role_id, capability_key, scope, updated_by, updated_at)
+                         VALUES ($1, $2, $3, $4, now())
+                         ON CONFLICT (role_id, capability_key) DO UPDATE SET
+                            scope = EXCLUDED.scope, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+                        [roleId, key, scope, req.user.id]
+                    );
+                }
+                changes[key] = scope;
+            }
+            await client.query('COMMIT');
+
+            await logAudit(null, {
+                companyId: req.company.id,
+                entityType: 'role_permissions',
+                entityId: roleId,
+                action: 'updated',
+                actor: req.user,
+                details: { role: role.name, changes },
+            });
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
+        }
+
+        const permRes = await pool.query(
+            `SELECT c.key, c.module, c.label, c.supports_scope, c.is_baseline,
+                    CASE WHEN c.is_baseline THEN 'full' ELSE COALESCE(rp.scope, 'none') END AS scope
+             FROM capabilities c
+             LEFT JOIN role_permissions rp ON rp.capability_key = c.key AND rp.role_id = $1
+             ORDER BY c.module, c.key`,
+            [roleId]
+        );
+        res.json({ role, permissions: permRes.rows });
     })
 );
 

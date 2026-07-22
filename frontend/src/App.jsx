@@ -43,6 +43,7 @@ import HorizonScanning from './pages/HorizonScanning';
 import RiskGovDocs from './pages/RiskGovDocs';
 import FormsTemplates from './pages/FormsTemplates';
 import AiIntegration from './pages/AiIntegration';
+import RolesPermissions from './pages/RolesPermissions';
 
 export default function App() {
     const { session, loading, companyPickerOpen } = useAuth();
@@ -128,6 +129,10 @@ export default function App() {
         content = <RiskConfig />;
     } else if (page === 'users' && (isSuperAdmin || role === 'Admin')) {
         content = <UserManagement />;
+    } else if (page === 'roles-permissions' && (isSuperAdmin || role === 'Admin')) {
+        // Phase B of the permissions engine — additive admin screen only,
+        // not yet enforced. See RBAC_Permissions_Engine_Scoping.docx Section 9.
+        content = <RolesPermissions />;
     } else if (page === 'departments' && (isSuperAdmin || role === 'Admin')) {
         content = <Departments />;
     } else if (page === 'business-units' && (isSuperAdmin || role === 'Admin')) {
@@ -144,7 +149,11 @@ export default function App() {
         content = <StorageHealth />;
     } else if (page === 'companies' && (isSuperAdmin || role === 'Admin')) {
         content = <Companies />;
-    } else if (page === 'access-matrix' && (isSuperAdmin || role === 'Admin' || isCRO)) {
+    } else if (page === 'access-matrix' && isCRO) {
+        // Retired for Admin/Super Admin as of Phase B (Section 3.8) — they now
+        // use the live Roles & Permissions screen instead. Left in place for
+        // CRO/Consultant CRO, who still use it as a read reference and were
+        // never in scope for the new (Admin-only) screen.
         content = <AccessMatrix />;
 
     // ── Admin + ops shared pages ──────────────────────────────────────────────

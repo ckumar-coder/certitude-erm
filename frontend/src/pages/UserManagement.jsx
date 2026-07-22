@@ -134,6 +134,11 @@ export default function UserManagement() {
     const [info, setInfo] = useState('');
     const [showForm, setShowForm] = useState(false);
     const [demoMode, setDemoMode] = useState(null);
+    // Phase B: role dropdown now reads from the roles table (built-in +
+    // custom) instead of the hardcoded ROLES array, per
+    // RBAC_Permissions_Engine_Scoping.docx Section 9. ROLES is kept as the
+    // initial value / fallback so the page still works if this fetch fails.
+    const [roleNames, setRoleNames] = useState(ROLES);
 
     const maskEmail = (email) => {
         if (!demoMode) return email;
@@ -159,6 +164,7 @@ export default function UserManagement() {
         load();
         api.get('/departments').then(setDepartments).catch(() => {});
         if (isBuMode) api.get('/business-units').then(setBus).catch(() => {});
+        api.get('/roles').then((data) => setRoleNames(data.map((r) => r.name))).catch(() => {});
         fetch('/api/version').then(r => r.json()).then(d => setDemoMode(d.demo_mode || null)).catch(() => {});
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -261,7 +267,7 @@ export default function UserManagement() {
                                     <td>{u.full_name || '—'}</td>
                                     <td>
                                         <select className="form-control" value={u.role} onChange={(e) => handleRoleChange(u.id, e.target.value)} style={{ width: 140 }}>
-                                            {ROLES.map((r) => (
+                                            {roleNames.map((r) => (
                                                 <option key={r} value={r}>
                                                     {r}
                                                 </option>
@@ -424,7 +430,7 @@ function AddUserForm({ onCreated, onError }) {
                 <div className="form-group">
                     <label>{t('col_role')}</label>
                     <select className="form-control" value={form.role} onChange={(e) => update('role', e.target.value)}>
-                        {ROLES.map((r) => (
+                        {roleNames.map((r) => (
                             <option key={r} value={r}>
                                 {r}
                             </option>
