@@ -6093,7 +6093,7 @@ async function linkObligation(client, obligationId, body) {
 
 app.get(
     '/api/obligations',
-    requireRole('Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO', 'Viewer'),
+    can('obligation.view'), // Phase C cutover -- was requireRole('Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO', 'Viewer')
     asyncHandler(async (req, res) => {
         const scope = managerScopeClause(req, 'applicable_to', 2);
         const result = await pool.query(
@@ -6106,7 +6106,7 @@ app.get(
 
 app.post(
     '/api/obligations',
-    requireRole('Admin', 'Risk Manager', 'CRO', 'Consultant CRO'),
+    can('obligation.manage'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'CRO', 'Consultant CRO')
     validate(schemas.createObligation),
     asyncHandler(async (req, res) => {
 
@@ -6177,7 +6177,7 @@ app.post(
 
 app.patch(
     '/api/obligations/:id',
-    requireRole('Admin', 'Risk Manager', 'CRO', 'Consultant CRO'),
+    can('obligation.manage'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'CRO', 'Consultant CRO')
     asyncHandler(async (req, res) => {
         const fields = [
             'regulatory_body',
@@ -6270,7 +6270,7 @@ app.patch(
 // and when this assessment changed" about.
 app.post(
     '/api/obligations/:id/status',
-    requireRole('Admin', 'Risk Manager', 'CRO', 'Consultant CRO'),
+    can('obligation.manage'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'CRO', 'Consultant CRO'); no dedicated status-change capability seeded, reuses obligation.manage (identical role/scope shape)
     asyncHandler(async (req, res) => {
         const { status, notes } = req.body;
         if (!['Compliant', 'Partially Compliant', 'Non-Compliant', 'Not Yet Assessed'].includes(status)) {
@@ -6350,7 +6350,7 @@ app.post(
 
 app.get(
     '/api/obligations/:id/history',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'CRO'),
+    can('obligation.view_history'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'Risk Champion', 'CRO')
     asyncHandler(async (req, res) => {
         const result = await pool.query(
             `SELECT h.* FROM obligation_status_history h
@@ -6542,7 +6542,7 @@ async function attachIssueLinks(client, issues) {
 
 app.get(
     '/api/issues',
-    requireRole('Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO', 'Viewer'),
+    can('issue.view'), // Phase C cutover -- was requireRole('Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO', 'Viewer')
     asyncHandler(async (req, res) => {
         // Risk Champions see issues their dept raised (raised_by_dept).
         // Managers / Approvers see issues their dept owns (department).
@@ -6559,7 +6559,7 @@ app.get(
 
 app.post(
     '/api/issues',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO'),
+    can('issue.create'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO')
     validate(schemas.createIssue),
     asyncHandler(async (req, res) => {
         // Raised-by department: auto-filled from the submitter's own department
@@ -6611,7 +6611,7 @@ app.post(
 
 app.patch(
     '/api/issues/:id',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO'),
+    can('issue.edit'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO')
     asyncHandler(async (req, res) => {
         // 'owner' removed — issues are now owned by departments, not individuals
         const fields = ['source_type', 'source_detail', 'description', 'root_cause', 'remediation_plan', 'due_date', 'priority', 'is_recurring'];
@@ -6722,7 +6722,14 @@ app.patch(
 //    the issue owner (separation of duties).
 app.post(
     '/api/issues/:id/status',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO'),
+    // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO').
+    // Found 2026-07-22: that list's literal 'CRO' triggered requireRole()'s
+    // auto-expand to 'Consultant CRO' too, but the issue.update_status seed
+    // (schema_v75) has no Consultant CRO row -- a seed omission, not a
+    // deliberate exclusion (every other issue.* capability has one). Patched
+    // live via PUT /api/roles/:id/permissions (Consultant CRO -> 'full') as
+    // part of this same cutover so behavior doesn't regress on deploy.
+    can('issue.update_status'),
     asyncHandler(async (req, res) => {
         const { status } = req.body;
         const validStatuses = ['Open', 'In Progress', 'Closed-Remediated', 'Risk Accepted', 'Deferred', 'No Longer Relevant'];
@@ -6812,7 +6819,7 @@ const VALID_INTERIM_ACTIONS = ['Compensating controls', 'Accept', 'Scores update
 // GET /api/issues/:id/actions — list action items for an issue
 app.get(
     '/api/issues/:id/actions',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Viewer'),
+    can('issue.view'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Viewer'); no dedicated action-item view capability exists, and issue.view's seed (all 8 roles incl. Viewer) matches this list exactly once Admin/Super Admin/Consultant CRO's requireRole() bypass+auto-expand are accounted for
     asyncHandler(async (req, res) => {
         const issueCheck = await pool.query(
             'SELECT id FROM issues WHERE id = $1 AND company_id = $2',
@@ -6844,7 +6851,10 @@ app.get(
 // POST /api/issues/:id/actions — create a new action item
 app.post(
     '/api/issues/:id/actions',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO'),
+    // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO').
+    // Same Consultant CRO seed gap as POST /api/issues/:id/status above --
+    // patched live alongside that one as part of this cutover.
+    can('issue.action.manage'),
     asyncHandler(async (req, res) => {
         const issueCheck = await pool.query(
             'SELECT id FROM issues WHERE id = $1 AND company_id = $2',
@@ -6891,7 +6901,7 @@ app.post(
 // PATCH /api/issues/:id/actions/:aid — edit action item fields (Draft only)
 app.patch(
     '/api/issues/:id/actions/:aid',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO'),
+    can('issue.action.manage'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO'); same Consultant CRO seed gap, patched alongside the others
     asyncHandler(async (req, res) => {
         const { rows: existing } = await pool.query(
             'SELECT * FROM issue_actions WHERE id = $1 AND issue_id = $2 AND company_id = $3',
@@ -6927,7 +6937,7 @@ app.patch(
 // DELETE /api/issues/:id/actions/:aid — delete (Draft only)
 app.delete(
     '/api/issues/:id/actions/:aid',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO'),
+    can('issue.action.manage'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO'); same Consultant CRO seed gap, patched alongside the others
     asyncHandler(async (req, res) => {
         const { rows: existing } = await pool.query(
             'SELECT * FROM issue_actions WHERE id = $1 AND issue_id = $2 AND company_id = $3',
@@ -6954,7 +6964,7 @@ app.delete(
 //   Approved|In Progress|Completed → Rejected|Deferred  (any authorised user, requires interim_action)
 app.post(
     '/api/issues/:id/actions/:aid/status',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO'),
+    can('issue.action.manage'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO'); same Consultant CRO seed gap, patched alongside the others
     asyncHandler(async (req, res) => {
         const { rows: existing } = await pool.query(
             'SELECT * FROM issue_actions WHERE id = $1 AND issue_id = $2 AND company_id = $3',
