@@ -5580,6 +5580,7 @@ async function attachPolicyMeta(client, policies) {
 
 app.get(
     '/api/policies',
+    can('policy.view'), // Phase C cutover -- was ungated (any authenticated role); policy.view is seeded 'full' for all 8 roles, so this is explicit rather than a behavior change
     asyncHandler(async (req, res) => {
         // Viewers see the latest PUBLISHED version only.
         // Confidential policies are hidden from users who lack an explicit access grant,
@@ -5615,7 +5616,7 @@ app.get(
 
 app.get(
     '/api/policies/:uid/history',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'CRO'),
+    can('policy.edit'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'Risk Champion', 'CRO'); no dedicated view_history capability exists for policies, policy.edit's seed matches this role list exactly
     asyncHandler(async (req, res) => {
         const result = await pool.query('SELECT * FROM policies WHERE company_id = $1 AND policy_uid = $2 ORDER BY version DESC', [
             req.company.id,
@@ -5627,7 +5628,7 @@ app.get(
 
 app.post(
     '/api/policies',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'CRO'),
+    can('policy.create'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'Risk Champion', 'CRO')
     validate(schemas.createPolicy),
     asyncHandler(async (req, res) => {
 
@@ -5703,7 +5704,7 @@ app.post(
 // review/approval, changes require a new version (see /new-version below).
 app.patch(
     '/api/policies/:id',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'CRO'),
+    can('policy.edit'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'Risk Champion', 'CRO')
     asyncHandler(async (req, res) => {
         const current = await pool.query('SELECT * FROM policies WHERE id = $1 AND company_id = $2', [req.params.id, req.company.id]);
         if (current.rows.length === 0) return res.status(404).json({ error: 'Policy not found' });
@@ -5795,7 +5796,7 @@ app.patch(
 // Approve and Publish require Admin (the "Risk Owner" role in our 3-role model).
 app.post(
     '/api/policies/:id/transition',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO'),
+    can('policy.transition'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO'); this is only the outer gate -- POLICY_TRANSITIONS below still does its own per-transition role check unchanged
     asyncHandler(async (req, res) => {
         const targetStatus = req.body.status;
         const current = await pool.query('SELECT * FROM policies WHERE id = $1 AND company_id = $2', [req.params.id, req.company.id]);
@@ -5837,7 +5838,7 @@ app.post(
 // forward its fields and links. The prior version remains in history.
 app.post(
     '/api/policies/:id/new-version',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'CRO'),
+    can('policy.edit'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'Risk Champion', 'CRO')
     asyncHandler(async (req, res) => {
         const client = await pool.connect();
         try {
@@ -5909,7 +5910,7 @@ app.post(
 // Viewers are excluded — they can read policies but cannot formally attest.
 app.post(
     '/api/policies/:id/attest',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO'),
+    can('policy.attest'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO')
     asyncHandler(async (req, res) => {
         const policyRes = await pool.query('SELECT * FROM policies WHERE id = $1 AND company_id = $2', [req.params.id, req.company.id]);
         if (policyRes.rows.length === 0) return res.status(404).json({ error: 'Policy not found' });
@@ -5937,7 +5938,7 @@ app.post(
 
 app.get(
     '/api/policies/:id/attestations',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'CRO'),
+    can('policy.edit'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'Risk Champion', 'CRO'); same shape as the history route above, reusing policy.edit
     asyncHandler(async (req, res) => {
         const policyRes = await pool.query('SELECT * FROM policies WHERE id = $1 AND company_id = $2', [req.params.id, req.company.id]);
         if (policyRes.rows.length === 0) return res.status(404).json({ error: 'Policy not found' });
@@ -5961,7 +5962,7 @@ app.get(
 // Policy confidential access management (Admin only)
 app.get(
     '/api/policies/:id/access',
-    requireRole('Admin'),
+    can('policy.manage_confidential_access'), // Phase C cutover -- was requireRole('Admin')
     asyncHandler(async (req, res) => {
         const result = await pool.query(
             `SELECT pa.user_id, u.email, u.full_name, pa.granted_at
@@ -5975,7 +5976,7 @@ app.get(
 
 app.post(
     '/api/policies/:id/access',
-    requireRole('Admin'),
+    can('policy.manage_confidential_access'), // Phase C cutover -- was requireRole('Admin')
     asyncHandler(async (req, res) => {
         const { user_id } = req.body;
         if (!user_id) return res.status(400).json({ error: 'user_id required' });
@@ -5989,7 +5990,7 @@ app.post(
 
 app.delete(
     '/api/policies/:id/access/:userId',
-    requireRole('Admin'),
+    can('policy.manage_confidential_access'), // Phase C cutover -- was requireRole('Admin')
     asyncHandler(async (req, res) => {
         await pool.query('DELETE FROM policy_access WHERE policy_id = $1 AND user_id = $2', [req.params.id, req.params.userId]);
         res.json({ ok: true });
