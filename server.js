@@ -1040,6 +1040,99 @@ function requireRole(...roles) {
     };
 }
 
+// ── can() / resolveScope() — Phase C shared authorization primitive ────────
+// (Documents/Internal/RBAC_Permissions_Engine_Scoping.docx, Section 8.1).
+// Replaces requireRole() one module at a time -- reads the scope
+// ('none'|'own'|'dept'|'full') for a capability from the
+// roles/capabilities/role_permissions tables Phase A seeded, instead of a
+// hardcoded role list at the call site.
+//
+// Effective-role nuance: a real Super Admin's session carries
+// req.company.role === 'Admin' with req.company.functional_role ===
+// 'Super Admin' (see the /company middleware above) -- the two other
+// places that need to tell them apart, the auto-approve business logic at
+// ~line 2667/3588, key off functional_role for exactly this reason. Admin
+// and Super Admin are seeded as distinct roles with one deliberate
+// difference (risk.auto_approve), so resolveScope() must key off the same
+// functional_role check those call sites use, or a real Super Admin user
+// would silently inherit Admin's (narrower) permissions instead of their
+// own.
+//
+// Cached in-process per (companyId, effectiveRole, capabilityKey) rather
+// than per-request -- role_permissions only changes when an Admin saves
+// the Roles & Permissions screen (Phase B), and that route clears this
+// cache on every successful save, so edits take effect immediately without
+// requiring affected users to log out and back in.
+const _scopeCache = new Map();
+
+function clearScopeCache() {
+    _scopeCache.clear();
+}
+
+function _effectiveRoleName(company) {
+    return company.functional_role === 'Super Admin' ? 'Super Admin' : company.role;
+}
+
+async function resolveScope(company, capabilityKey) {
+    const roleName = _effectiveRoleName(company);
+    const cacheKey = `${company.id}::${roleName}::${capabilityKey}`;
+    if (_scopeCache.has(cacheKey)) return _scopeCache.get(cacheKey);
+
+    const capRes = await pool.query('SELECT is_baseline FROM capabilities WHERE key = $1', [capabilityKey]);
+    if (capRes.rows.length === 0) {
+        // Fail closed on a typo'd/unknown capability key rather than silently
+        // granting or denying -- this should only ever happen during
+        // development of a new can() call site.
+        throw new Error(`Unknown capability key: ${capabilityKey}`);
+    }
+    if (capRes.rows[0].is_baseline) {
+        _scopeCache.set(cacheKey, 'full');
+        return 'full';
+    }
+
+    // Built-in roles (company_id IS NULL) first; a company-specific custom
+    // role of the same name would only exist once custom roles are actually
+    // assignable (Phase D), so this is a non-issue today but resolved
+    // deterministically regardless.
+    const roleRes = await pool.query(
+        `SELECT id FROM roles WHERE name = $1 AND (company_id IS NULL OR company_id = $2)
+         ORDER BY company_id IS NULL DESC LIMIT 1`,
+        [roleName, company.id]
+    );
+    if (roleRes.rows.length === 0) {
+        _scopeCache.set(cacheKey, 'none');
+        return 'none';
+    }
+
+    const permRes = await pool.query(
+        'SELECT scope FROM role_permissions WHERE role_id = $1 AND capability_key = $2',
+        [roleRes.rows[0].id, capabilityKey]
+    );
+    const scope = permRes.rows.length > 0 ? permRes.rows[0].scope : 'none';
+    _scopeCache.set(cacheKey, scope);
+    return scope;
+}
+
+// Route guard, drop-in analog of requireRole() for a single capability.
+// On success, sets req.scope to 'own' | 'dept' | 'full' so the handler can
+// apply department/ownership filtering exactly as it already does today
+// via managerScopeClause()/managerCanAccess() -- Phase C does not change
+// that existing filtering logic, only which mechanism decides whether the
+// request is allowed through at all.
+function can(capabilityKey) {
+    return (req, res, next) => {
+        resolveScope(req.company, capabilityKey)
+            .then((scope) => {
+                if (scope === 'none') {
+                    return res.status(403).json({ error: `Missing capability: ${capabilityKey}` });
+                }
+                req.scope = scope;
+                next();
+            })
+            .catch(next);
+    };
+}
+
 
 // Gates routes that require the platform-level Consultant flag.
 // Used for the Consultant Dashboard — independent of company-scoped roles.
@@ -4176,7 +4269,7 @@ app.get(
 
 app.get(
     '/api/kris/next-id',
-    requireRole('Admin', 'Risk Manager', 'CRO', 'Consultant CRO'),
+    can('kri.manage_definition'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'CRO', 'Consultant CRO')
     asyncHandler(async (req, res) => {
         const client = await pool.connect();
         try {
@@ -4191,7 +4284,7 @@ app.get(
 
 app.get(
     '/api/kris',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO', 'Viewer'),
+    can('kri.view'), // Phase C cutover -- was requireRole(all 8 roles); managerScopeClause() below still applies dept filtering unchanged
     asyncHandler(async (req, res) => {
         const scope = managerScopeClause(req, 'department', 2);
         const krisRes = await pool.query(
@@ -4244,7 +4337,7 @@ app.get(
 // caps history at 12 for the sparkline view.
 app.get(
     '/api/kri-register',
-    requireRole('Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO', 'Viewer'),
+    can('kri.view'), // Phase C cutover -- was requireRole('Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO', 'Viewer') (Admin/Super Admin passed via the old hardcoded bypass; kri.view is 'full' for them in the seed, so behavior is unchanged)
     asyncHandler(async (req, res) => {
         const scope = managerScopeClause(req, 'department', 2);
         const krisRes = await pool.query(
@@ -4310,7 +4403,7 @@ app.get(
 
 app.post(
     '/api/kris',
-    requireRole('Admin', 'Risk Manager', 'CRO', 'Consultant CRO'),
+    can('kri.manage_definition'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'CRO', 'Consultant CRO')
     validate(schemas.createKri),
     asyncHandler(async (req, res) => {
 
@@ -4376,7 +4469,7 @@ app.post(
 
 app.patch(
     '/api/kris/:id',
-    requireRole('Admin', 'Risk Manager', 'CRO', 'Consultant CRO'),
+    can('kri.manage_definition'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'CRO', 'Consultant CRO'); managerCanAccess() below still enforces department scope unchanged
     asyncHandler(async (req, res) => {
         const current = await pool.query('SELECT * FROM kris WHERE id = $1 AND company_id = $2', [req.params.id, req.company.id]);
         if (current.rows.length === 0) return res.status(404).json({ error: 'KRI not found' });
@@ -4446,7 +4539,7 @@ app.patch(
 // Records a new measurement (B3: "Current value + trend (history)").
 app.post(
     '/api/kris/:id/measurements',
-    requireRole('Admin', 'Risk Manager', 'CRO', 'Consultant CRO'),
+    can('kri.record_measurement'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'CRO', 'Consultant CRO'); managerCanAccess() below still enforces department scope unchanged
     asyncHandler(async (req, res) => {
         const { measurement_date, value, rag_status, notes, reporting_period } = req.body;
         if (!measurement_date || value === undefined || value === null) {
@@ -4910,12 +5003,20 @@ app.post(
 // Roles & Permissions -- Phase B of the admin-configurable permissions
 // engine (see Documents/Internal/RBAC_Permissions_Engine_Scoping.docx
 // Section 9). Reads/writes the roles/capabilities/role_permissions tables
-// seeded in Phase A (schema_v75_permissions_engine.sql). Additive only --
-// per the phased plan, nothing here is consulted by requireRole() or any
-// canX flag yet; that cutover is Phase C/D. This is purely the admin
-// screen so Qatar Post can see and edit the model ahead of enforcement.
-// Admin-only, gated the same way as every other admin route today
-// (requireRole('Admin') -- not yet routed through the engine itself).
+// seeded in Phase A (schema_v75_permissions_engine.sql). This screen is
+// purely so Qatar Post can see and edit the model. It is still gated by
+// requireRole('Admin') itself, not by can() -- role/permission management
+// is one of the two safety-baseline-adjacent capabilities (users.manage /
+// roles.manage) with a lockout guardrail below, so leaving its own gate on
+// the simple hardcoded check is deliberate, not an oversight.
+//
+// As of Phase C, other modules' route guards *do* now consult these
+// tables via can() (see resolveScope() near requireRole() above) --
+// starting with KRI Library/Register, Glossary, and Escalation Rules
+// (the doc's Section "Phase C" calls these out as the more isolated,
+// lower-traffic modules to cut over first). Most routes are still on
+// requireRole(); this is an in-progress, module-by-module migration, not
+// a completed cutover.
 // ============================================================
 
 // GET /api/roles -- built-in roles (company_id IS NULL) plus this
@@ -5124,6 +5225,12 @@ app.put(
                 changes[key] = scope;
             }
             await client.query('COMMIT');
+
+            // Phase C: any can() call already resolved for this role is now
+            // stale -- drop the whole cache (cheap; it only ever holds a
+            // handful of entries) so the new scopes apply to the very next
+            // request, not just future logins.
+            clearScopeCache();
 
             await logAudit(null, {
                 companyId: req.company.id,
@@ -8497,7 +8604,7 @@ app.get(
 
 app.get(
     '/api/escalation-rules',
-    requireRole('Admin', 'CRO', 'Consultant CRO'),
+    can('escalation_rules.manage'), // Phase C cutover -- was requireRole('Admin', 'CRO', 'Consultant CRO')
     asyncHandler(async (req, res) => {
         const result = await pool.query('SELECT * FROM escalation_rules WHERE company_id = $1 ORDER BY trigger_type', [req.company.id]);
         res.json(result.rows);
@@ -8506,7 +8613,7 @@ app.get(
 
 app.post(
     '/api/escalation-rules',
-    requireRole('Admin', 'CRO', 'Consultant CRO'),
+    can('escalation_rules.manage'), // Phase C cutover -- was requireRole('Admin', 'CRO', 'Consultant CRO')
     asyncHandler(async (req, res) => {
         const { trigger_type, threshold_days = 0, notify_target = 'Owner', escalate_after_days = null, escalate_to = null, channels = 'in_app', is_active = true } = req.body;
 
@@ -8536,7 +8643,7 @@ app.post(
 
 app.patch(
     '/api/escalation-rules/:id',
-    requireRole('Admin', 'CRO', 'Consultant CRO'),
+    can('escalation_rules.manage'), // Phase C cutover -- was requireRole('Admin', 'CRO', 'Consultant CRO')
     asyncHandler(async (req, res) => {
         const fields = ['threshold_days', 'notify_target', 'escalate_after_days', 'escalate_to', 'channels', 'is_active'];
         const updates = [];
@@ -9212,7 +9319,7 @@ app.get('/api/glossary', asyncHandler(async (req, res) => {
     res.json(r.rows);
 }));
 
-app.post('/api/glossary', requireRole('Admin'), validate(schemas.createGlossaryTerm), asyncHandler(async (req, res) => {
+app.post('/api/glossary', can('glossary.manage'), validate(schemas.createGlossaryTerm), asyncHandler(async (req, res) => { // Phase C cutover -- was requireRole('Admin')
     const { term, definition } = req.body;
     const r = await pool.query(
         `INSERT INTO glossary_terms (company_id, term, definition, created_by)
@@ -9222,7 +9329,7 @@ app.post('/api/glossary', requireRole('Admin'), validate(schemas.createGlossaryT
     res.status(201).json(r.rows[0]);
 }));
 
-app.delete('/api/glossary/:id', requireRole('Admin'), asyncHandler(async (req, res) => {
+app.delete('/api/glossary/:id', can('glossary.manage'), asyncHandler(async (req, res) => { // Phase C cutover -- was requireRole('Admin')
     const r = await pool.query(
         `DELETE FROM glossary_terms WHERE id=$1 AND company_id=$2`,
         [req.params.id, req.company.id]
