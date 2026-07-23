@@ -1,15 +1,31 @@
 // IssuesTracker.jsx — Issues & Actions (D) page.
-// Role gating: `canEdit` (below, action-item level) covers Admin, Risk
-// Manager, Risk Champion, Risk Owner, CRO — Consultant CRO is NOT
-// explicitly listed here (unlike most other CRO-gated checks in this
-// codebase, it does not rely on the backend's CRO->Consultant CRO
-// auto-expand since this is a frontend-only flag). Separation-of-duties
-// (closer/verifier != owner) is enforced server-side by identity
-// comparison, not reflected in this flag. See
+// Role gating: Phase D batch 6 (2026-07-23) cut all local flags over to
+// live capability checks:
+//   - `canEdit` (action-item level, in ActionItemsPanel) now reads
+//     issue.action.manage. Previously a hand-typed role-literal list
+//     (Admin, Risk Manager, Risk Champion, Risk Owner, CRO) that predated
+//     the permissions engine and had drifted from the seed on both ends —
+//     missing Super Admin (backend already granted access via the
+//     requireRole() bypass, then can() after Phase C), and missing
+//     Consultant CRO (the header comment used to flag this explicitly as
+//     a known gap, since this flag never relied on the backend's
+//     CRO->Consultant CRO auto-expand; Consultant CRO's access was
+//     patched into the live seed during Phase C batch 3 and is now
+//     correctly reflected here too).
+//   - `canEditIssue` (issue.edit) and `canUpdateStatus`
+//     (issue.update_status) are new — the Edit and Update Status buttons
+//     in the list view previously had no gate at all, so they were
+//     visible-but-broken (403 on click) for Viewer, the only role with
+//     issue.view access but no issue.edit/issue.update_status access.
+//     Found incidentally while auditing this file for the Section 3.6
+//     pass; fixed since it's a real, verifiable bug (button shown, click
+//     always fails), not a policy question.
+// Separation-of-duties (closer/verifier != owner) is enforced server-side
+// by identity comparison, not reflected in any of these flags. See
 // Documents/Internal/RBAC_Permissions_Engine_Scoping.docx section 3.6.
 import { Fragment, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useAuth } from '../AuthContext';
+import { useAuth, usePermission } from '../AuthContext';
 import EvidenceAttachments from '../components/EvidenceAttachments';
 import CascadingDeptSelector from '../components/CascadingDeptSelector';
 import { useT } from '../contexts/LanguageContext';
@@ -80,6 +96,8 @@ export default function IssuesTracker({ onNavigate }) {
     const activeCompany = session.companies.find((c) => c.id === session.activeCompanyId);
     const role = activeCompany?.role;
     const isBuMode = !!activeCompany?.has_business_units;
+    const canEditIssue = usePermission('issue.edit') !== 'none';
+    const canUpdateStatus = usePermission('issue.update_status') !== 'none';
 
     const [issues, setIssues] = useState([]);
     const [allControls, setAllControls] = useState([]);
@@ -327,10 +345,12 @@ export default function IssuesTracker({ onNavigate }) {
                                     </td>
                                     <td>
                                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                                            <button className="btn btn-sm btn-secondary" onClick={() => setEditing(i)}>
-                                                Edit
-                                            </button>
-                                            {!['Closed-Remediated', 'Risk Accepted'].includes(i.status) && (
+                                            {canEditIssue && (
+                                                <button className="btn btn-sm btn-secondary" onClick={() => setEditing(i)}>
+                                                    Edit
+                                                </button>
+                                            )}
+                                            {canUpdateStatus && !['Closed-Remediated', 'Risk Accepted'].includes(i.status) && (
                                                 <button className="btn btn-sm btn-secondary" onClick={() => setStatusEditing(i)}>
                                                     Update Status
                                                 </button>
@@ -358,7 +378,6 @@ export default function IssuesTracker({ onNavigate }) {
                                                 allDepartments={allDepartments}
                                                 allBus={allBus}
                                                 isBuMode={isBuMode}
-                                                role={role}
                                                 onError={setError}
                                             />
                                         </td>
@@ -856,7 +875,7 @@ function IssueForm({ issue, allControls, allRisks, allObligations, allKris, allD
 // that issue, each with its own 7-step action_plan_status lifecycle.
 // Allows creating new items and transitioning statuses with SoD enforcement.
 
-function ActionItemsPanel({ issue, allDepartments, allBus, isBuMode, role, onError }) {
+function ActionItemsPanel({ issue, allDepartments, allBus, isBuMode, onError }) {
     const { api, session } = useAuth();
     const activeCompany = session.companies.find((c) => c.id === session.activeCompanyId);
     const currentUserId = session.user?.id || activeCompany?.userId;
@@ -983,7 +1002,7 @@ function ActionItemsPanel({ issue, allDepartments, allBus, isBuMode, role, onErr
         }
     }
 
-    const canEdit = ['Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO'].includes(role);
+    const canEdit = usePermission('issue.action.manage') !== 'none';
 
     return (
         <div style={{ padding: '12px 4px' }}>

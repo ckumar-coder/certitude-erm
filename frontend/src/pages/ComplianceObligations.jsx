@@ -1,9 +1,23 @@
 // ComplianceObligations.jsx — Compliance Obligations Register (C1) page.
-// Role gating: `canManage` (below) is Admin/Risk Manager/CRO/Consultant
-// CRO — Risk Champion/Owner/Viewer have read-only access. See
-// Documents/Internal/RBAC_Permissions_Engine_Scoping.docx section 3.6.
+// Role gating: Phase D batch 6 (2026-07-23) cut both local flags over to
+// live capability checks:
+//   - `canManage` now reads obligation.manage (full for Admin, Super
+//     Admin, Risk Manager, CRO, Consultant CRO). Previously a role-literal
+//     list missing Super Admin, who only had access via the backend's
+//     bypass/can() seed, not this frontend gate. Risk Champion/Owner/
+//     Viewer still have read-only access, unchanged.
+//   - `canViewHistory` (new) reads obligation.view_history (full for
+//     Admin, Super Admin, Risk Manager, Risk Champion, CRO, Consultant
+//     CRO — Risk Owner and Viewer are not granted this one). The
+//     "History" button previously had no gate at all, so it was
+//     visible-but-broken (403 on click) for Risk Owner and Viewer, both
+//     of whom have obligation.view access and so see obligations in the
+//     list. Found incidentally while auditing this file for the Section
+//     3.6 pass; fixed since it's a real, verifiable bug, not a policy
+//     question.
+// See Documents/Internal/RBAC_Permissions_Engine_Scoping.docx section 3.6.
 import { Fragment, useEffect, useState } from 'react';
-import { useAuth } from '../AuthContext';
+import { useAuth, usePermission } from '../AuthContext';
 import EvidenceAttachments from '../components/EvidenceAttachments';
 import { useT } from '../contexts/LanguageContext';
 
@@ -27,7 +41,8 @@ export default function ComplianceObligations() {
     const t = useT();
     const activeCompany = session.companies.find((c) => c.id === session.activeCompanyId);
     const role = activeCompany?.role || 'Viewer';
-    const canManage = role === 'Admin' || role === 'Risk Manager' || role === 'CRO' || role === 'Consultant CRO';
+    const canManage = usePermission('obligation.manage') !== 'none';
+    const canViewHistory = usePermission('obligation.view_history') !== 'none';
     const [obligations, setObligations] = useState([]);
     const [allPolicies, setAllPolicies] = useState([]);
     const [allControls, setAllControls] = useState([]);
@@ -230,9 +245,11 @@ export default function ComplianceObligations() {
                                                     Update Status
                                                 </button>
                                             )}
-                                            <button className="btn btn-sm btn-secondary" onClick={() => showHistory(o.id)}>
-                                                History
-                                            </button>
+                                            {canViewHistory && (
+                                                <button className="btn btn-sm btn-secondary" onClick={() => showHistory(o.id)}>
+                                                    History
+                                                </button>
+                                            )}
                                             <button
                                                 className="btn btn-sm btn-secondary"
                                                 onClick={() => setEvidenceObligation(showEvidence ? null : o.obligation_uid)}

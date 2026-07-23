@@ -87,8 +87,39 @@ function isLocked(user) {
 }
 
 async function recordFailedLogin(userId) {
+    // Auto-decay (fixed 2026-07-23): this route is only ever reached after
+    // the caller has already checked isLocked(user) and found the account
+    // NOT currently locked -- but that's true both for an account that has
+    // never been locked (locked_until IS NULL) and for one whose lock timer
+    // has simply expired (locked_until is in the past, counter never
+    // cleared). Previously both cases fell through to the same plain
+    // increment, so a lock that had already expired would still have its
+    // old, stale failed_login_attempts count (>= MAX_FAILED_ATTEMPTS)
+    // sitting there -- meaning the very next failed attempt (including this
+    // app's own login-page "wrong password" UX, or test-suite.js's
+    // deliberate first wrong-password test) would immediately re-lock the
+    // account for another LOCKOUT_MINUTES, regardless of how long the prior
+    // lock had already been sitting expired. This is the "self-perpetuating
+    // loop" flagged as an open question elsewhere in this codebase's notes.
+    // Fixed by treating an expired lock as an implicit counter reset: if
+    // locked_until is set and in the past, this failed attempt starts a
+    // fresh count at 1 (well under the threshold) instead of continuing the
+    // old streak, and the stale locked_until is cleared in the same atomic
+    // UPDATE. A still-active lock (defensive branch only -- unreachable via
+    // the current login route, which always checks isLocked() first) keeps
+    // incrementing normally.
     const result = await pool.query(
-        'UPDATE users SET failed_login_attempts = failed_login_attempts + 1 WHERE id = $1 RETURNING failed_login_attempts',
+        `UPDATE users
+         SET failed_login_attempts = CASE
+                 WHEN locked_until IS NOT NULL AND locked_until <= now() THEN 1
+                 ELSE failed_login_attempts + 1
+             END,
+             locked_until = CASE
+                 WHEN locked_until IS NOT NULL AND locked_until <= now() THEN NULL
+                 ELSE locked_until
+             END
+         WHERE id = $1
+         RETURNING failed_login_attempts`,
         [userId]
     );
     const attempts = result.rows[0].failed_login_attempts;
