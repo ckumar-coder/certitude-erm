@@ -1951,13 +1951,23 @@ app.post('/api/companies/standalone', authenticate, requirePasswordCurrent,
             return res.status(409).json({ error: 'A company with this name already exists in this country.' });
         }
 
-        // Verify user is Admin on at least one company, OR is a consultant super-admin.
+        // Verify user is Admin (or Super Admin) on at least one company, OR is a
+        // consultant super-admin.
         // RBAC-01: is_consultant alone is not sufficient — must also be is_super_admin
         // to prevent a broadly-granted consultant flag from conferring company-creation rights.
+        // Fixed 2026-07-23 (Phase D batch 10): this check only ever matched the
+        // literal string uc.role = 'Admin', which silently excluded any account
+        // whose user_companies.role is literally 'Super Admin' (the live Qatar
+        // Post admin account is exactly this case -- see the RBAC-02 finding
+        // elsewhere in this file/CLAUDE.md documenting that its role was changed
+        // to the literal 'Super Admin' string independently of the is_super_admin
+        // boolean). Same class of bug already found and fixed this session in
+        // POLICY_TRANSITIONS, Horizon Scanning's canSeeDrafts, and the risk
+        // auto-approve check -- added here too.
         const check = await pool.query(
             `SELECT 1 FROM user_companies uc
              JOIN companies c ON c.id = uc.company_id
-             WHERE uc.user_id = $1 AND uc.role = 'Admin' AND c.is_active = true
+             WHERE uc.user_id = $1 AND uc.role IN ('Admin', 'Super Admin') AND c.is_active = true
              LIMIT 1`,
             [req.user.id]
         );
@@ -7537,7 +7547,16 @@ app.get(
         const issueRole = req.company.role;
         const issueDepts = getManagerDepts(req).map((d) => d.toLowerCase());
         let myIssuesRes;
-        if (issueRole === 'CRO' || issueRole === 'Consultant CRO' || issueRole === 'Admin') {
+        // Fixed 2026-07-23 (Phase D batch 10): added 'Super Admin' -- the live
+        // Qatar Post admin account's user_companies.role is literally 'Super
+        // Admin' (see the RBAC-02 finding elsewhere in this file/CLAUDE.md), so
+        // without this it fell through to the dept-scoped else-branch below,
+        // which only coincidentally still returned enterprise-wide results
+        // because that account currently has zero assigned departments. Same
+        // class of literal-role gap already found and fixed several times this
+        // session (POLICY_TRANSITIONS, Horizon Scanning's canSeeDrafts, risk
+        // auto-approve, POST /api/companies/standalone).
+        if (issueRole === 'CRO' || issueRole === 'Consultant CRO' || issueRole === 'Admin' || issueRole === 'Super Admin') {
             myIssuesRes = await pool.query(
                 `SELECT * FROM issues WHERE company_id = $1 AND status = ANY($2::text[]) ORDER BY due_date ASC NULLS LAST`,
                 [req.company.id, OPEN_ISSUE_STATUSES]

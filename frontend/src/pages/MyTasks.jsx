@@ -1,8 +1,24 @@
 // MyTasks.jsx — My Tasks page, the identity-scoped cross-module inbox.
-// Section visibility below is role-conditional (Viewer sees no task
-// groups; Risk Champion/CRO-tier/Admin see different groups), but the
-// underlying data is always filtered to the logged-in user, not a
-// department or role scope. See
+// Reviewed for Phase D batch 10 (2026-07-23): unlike every other file in
+// this pass, this page has no genuine canX authorization flag to cut over
+// to usePermission(). The queue tables (Manager/Approver/CRO approval/CRO
+// acceptance) render purely based on which queues the backend's
+// /api/dashboard/my-tasks response actually populates for this user --
+// already correctly role/scope-filtered server-side, nothing for the
+// frontend to gate. The one role-literal check left in this file
+// (`role === 'Viewer'`, hiding Control Tests/My Issues/Risk Reviews/Policy
+// Reviews/My KRIs) is a UX simplification, not a permission boundary --
+// Viewer has no owned records in any of those modules, so the sections
+// would render empty (each already guards on `.length > 0`) even without
+// this check; left as-is, same precedent as `critical-risks`'s ungated nav
+// item and DepartmentField.jsx's exclusion (Section 5.2 of the scoping
+// doc -- UX conventions, not permission decisions, are out of scope for
+// this pass). Fixed one real, if minor, bug while reviewing: the "My
+// Issues" section heading text omitted 'Super Admin' from its
+// CRO/Consultant CRO/Admin "All Open Issues" branch (the matching backend
+// query in server.js's /api/dashboard/my-tasks had the identical gap,
+// fixed alongside) -- same recurring literal-role-string class of bug
+// found several times this session.
 // Documents/Internal/RBAC_Permissions_Engine_Scoping.docx section 3.6.
 import { useEffect, useState } from 'react';
 import { useAuth } from '../AuthContext';
@@ -828,7 +844,7 @@ export default function MyTasks() {
                             <h3 style={{ marginTop: 0 }}>
                                 {role === 'Risk Champion'
                                     ? 'Issues Raised by My Department'
-                                    : role === 'CRO' || role === 'Consultant CRO' || role === 'Admin'
+                                    : role === 'CRO' || role === 'Consultant CRO' || role === 'Admin' || role === 'Super Admin'
                                         ? 'All Open Issues'
                                         : 'Issues Owned by My Department'}
                             </h3>

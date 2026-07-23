@@ -1,9 +1,24 @@
 // CompanySelect.jsx — V2.0 collapsible hierarchical company picker
 // Blue/green alternating colour scheme per company.
-// Role gating: `isAdmin` (below) shows admin-only company-switcher
-// options, true for Admin role OR the separate is_consultant account
-// flag (a different authorization axis — see
-// Documents/Internal/RBAC_Permissions_Engine_Scoping.docx section 3.6).
+// Role gating: `isAdmin` (below) shows the "+ Create new company" button,
+// which hits POST /api/companies/standalone. Phase D batch 10 (2026-07-23)
+// found and fixed two real, previously-live bugs here, matched against the
+// backend's own check on that same route:
+//   1. `companies.some(c => c.role === 'Admin')` was missing 'Super Admin'
+//      -- the same recurring literal-string gap found and fixed several
+//      times already this session (POLICY_TRANSITIONS, Horizon Scanning's
+//      canSeeDrafts, risk auto-approve). Concretely: the live Qatar Post
+//      admin account's user_companies.role is literally 'Super Admin' (see
+//      the RBAC-02 finding elsewhere in this file/CLAUDE.md), so this
+//      button was invisible to that account even though the backend (also
+//      fixed in this pass) now grants it access.
+//   2. `!!session.user.is_consultant` alone was MORE permissive than the
+//      backend, which requires `is_consultant && is_super_admin` (see the
+//      backend route's own RBAC-01 comment) -- so a plain consultant
+//      account (is_consultant=true, is_super_admin=false) would have seen
+//      a working-looking button that 403'd on submit. Fixed to match the
+//      backend's exact condition.
+// See Documents/Internal/RBAC_Permissions_Engine_Scoping.docx section 3.6.
 
 import { useState } from 'react';
 import { useAuth } from '../AuthContext';
@@ -50,7 +65,8 @@ export default function CompanySelect() {
     const [createError, setCreateError] = useState('');
     const upd = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
-    const isAdmin = companies.some((c) => c.role === 'Admin') || !!session.user.is_consultant;
+    const isAdmin = companies.some((c) => c.role === 'Admin' || c.role === 'Super Admin')
+        || (session.user.is_consultant && session.user.is_super_admin);
 
     const toggle = (id) => setExpanded((s) => ({ ...s, [id]: !s[id] }));
 
