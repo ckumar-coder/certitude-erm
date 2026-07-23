@@ -1,12 +1,42 @@
 // PolicyRepository.jsx — Policy & Procedure Repository (A1) page.
-// `canManage` (below) is Admin and Risk Manager ONLY — narrower than most
-// other modules (no Risk Champion/CRO). Lifecycle transitions
-// (Draft/Review/Approve/Publish/Archive) have their own per-transition
-// role gates server-side (POLICY_TRANSITIONS in server.js), not fully
-// captured by this single flag. See
-// Documents/Internal/RBAC_Permissions_Engine_Scoping.docx section 3.6.
+// Phase D batch 7 (2026-07-23): the old single `canManage` flag (`role
+// === 'Admin' || role === 'Risk Manager'`) was replaced with three
+// precise flags, after discovering it had been significantly narrower
+// than real backend access this whole time -- not a policy question, a
+// verified bug:
+//   - `canCreatePolicy` (policy.create) and `canEditPolicy` (policy.edit)
+//     gate the "+ New Policy" button/form, the "New Version" button, and
+//     the attestation-stats view. Both capabilities are seeded full for
+//     Admin, Super Admin, Risk Manager, Risk Champion, CRO, and
+//     Consultant CRO -- confirmed by reading POST /api/policies and
+//     PATCH-adjacent routes in server.js: `can('policy.create')` /
+//     `can('policy.edit')` are each route's *only* gate, no secondary
+//     narrower check, so this seed is real, working access, not just a
+//     theoretical grant. The old canManage flag hid all of this from
+//     Risk Champion, CRO, Consultant CRO, and Super Admin.
+//   - `canSeeTransitions` (Draft/Review/Approve/Publish/Archive buttons)
+//     is deliberately kept as a role-literal check --
+//     `['Admin', 'Super Admin', 'Risk Manager', 'Risk Owner'].includes(role)`
+//     -- NOT a capability, because the actual authority is
+//     business-rule-coupled: `POLICY_TRANSITIONS` in server.js grants
+//     different roles different *specific* transitions (e.g. only
+//     Admin/Super Admin/Risk Owner can move Under Review -> Approved),
+//     not a flat "can transition" capability -- same "manager-approval-
+//     chain, not a single capability" precedent as Phase C's
+//     croCanApprove()/risk edit-authority logic. This flag just
+//     determines whether to show the transition-button column at all; it
+//     was previously bundled into canManage, which meant Risk Owner
+//     (who POLICY_TRANSITIONS has always granted real transition
+//     authority) and Super Admin had no visible transition buttons at
+//     all. Note: as before this change, a role can still see a button for
+//     a specific transition its role isn't actually authorized for in
+//     POLICY_TRANSITIONS for that exact from/to pair (e.g. Risk Manager
+//     sees "Published" and gets 403) -- that imprecision is pre-existing
+//     and out of scope for this pass, which only fixes the two entirely-
+//     missing roles.
+// See Documents/Internal/RBAC_Permissions_Engine_Scoping.docx section 3.6.
 import { useEffect, useState } from 'react';
-import { useAuth } from '../AuthContext';
+import { useAuth, usePermission } from '../AuthContext';
 import { useT } from '../contexts/LanguageContext';
 
 const CATEGORIES = ['Governance', 'Finance', 'HR', 'IT', 'Compliance', 'Operations', 'Risk', 'BCM'];
@@ -44,7 +74,9 @@ export default function PolicyRepository() {
     const t = useT();
     const activeCompany = session.companies.find((c) => c.id === session.activeCompanyId);
     const role = activeCompany?.role;
-    const canManage = role === 'Admin' || role === 'Risk Manager';
+    const canCreatePolicy = usePermission('policy.create') !== 'none';
+    const canEditPolicy = usePermission('policy.edit') !== 'none';
+    const canSeeTransitions = ['Admin', 'Super Admin', 'Risk Manager', 'Risk Owner'].includes(role);
 
     const [policies, setPolicies] = useState([]);
     const [allRisks, setAllRisks] = useState([]);
@@ -63,7 +95,7 @@ export default function PolicyRepository() {
         setError('');
         try {
             const calls = [api.get('/policies')];
-            if (canManage) {
+            if (canCreatePolicy) {
                 calls.push(api.get('/risks'), api.get('/controls'), api.get('/obligations'), api.get('/users'));
             }
             const [policyData, riskData, controlData, obligationData, userData] = await Promise.all(calls);
@@ -127,7 +159,7 @@ export default function PolicyRepository() {
                     <h1 className="page-title">{t('policies_title')}</h1>
                     <p className="page-subtitle">{t('policies_subtitle')}</p>
                 </div>
-                {canManage && (
+                {canCreatePolicy && (
                     <button className="btn btn-primary" onClick={() => setShowForm((s) => !s)}>
                         {showForm ? 'Close' : '+ New Policy'}
                     </button>
@@ -205,7 +237,7 @@ export default function PolicyRepository() {
                                             <div className="text-muted">{p.next_review_date || '—'}</div>
                                         </td>
                                         <td>
-                                            {canManage ? (
+                                            {canEditPolicy ? (
                                                 attestations[p.id] ? (
                                                     <div className="text-muted">
                                                         {attestations[p.id].attested.length} attested
@@ -232,14 +264,14 @@ export default function PolicyRepository() {
                                             )}
                                         </td>
                                         <td>
-                                            {canManage && (
+                                            {(canSeeTransitions || canEditPolicy) && (
                                                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                                                    {(FORWARD_TRANSITIONS[p.status] || []).map((target) => (
+                                                    {canSeeTransitions && (FORWARD_TRANSITIONS[p.status] || []).map((target) => (
                                                         <button key={target} className="btn btn-sm btn-secondary" onClick={() => handleTransition(p, target)}>
                                                             {target === 'Draft' ? 'Send back to Draft' : target}
                                                         </button>
                                                     ))}
-                                                    {['Published', 'Archived'].includes(p.status) && (
+                                                    {canEditPolicy && ['Published', 'Archived'].includes(p.status) && (
                                                         <button className="btn btn-sm btn-secondary" onClick={() => handleNewVersion(p)}>
                                                             New Version
                                                         </button>
