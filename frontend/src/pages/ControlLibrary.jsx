@@ -1,13 +1,17 @@
 // ControlLibrary.jsx — Control Library (B2) page.
-// Role gating: `canTest` (below) is Admin/Risk Manager/CRO/Consultant CRO
-// only — Risk Champion/Owner/Viewer can view controls and test history but
-// not record a new test result. Create/edit controls is a broader set
-// (see docs/API_REFERENCE.md "Control Library"). See
+// Role gating: `canTest` (below) reads the live control.test capability
+// (Admin, Super Admin, Risk Manager, CRO, Consultant CRO) — Risk Champion/
+// Owner/Viewer can view controls and test history but not record a new
+// test result. Phase D batch 5 (2026-07-23): cut over from a role-literal
+// list that was missing Super Admin, even though the backend's
+// POST /api/controls/:id/test route already granted them access via
+// can('control.test') since Phase C batch 2. Create/edit controls is a
+// broader set (see docs/API_REFERENCE.md "Control Library"). See
 // Documents/Internal/RBAC_Permissions_Engine_Scoping.docx section 3.6 for
 // the full audit of this and the other 16 frontend files with local
 // capability flags like this one.
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { useAuth } from '../AuthContext';
+import { useAuth, usePermission } from '../AuthContext';
 import DepartmentField from '../components/DepartmentField';
 import EvidenceAttachments from '../components/EvidenceAttachments';
 import ControlLibraryModal from '../components/ControlLibraryModal';
@@ -113,9 +117,8 @@ function ControlTable({ controls, onTest, onLink, onEvidence, evidenceControl, h
     const { api, session } = useAuth();
     const t = useT();
     const activeCompany = session.companies.find((c) => c.id === session.activeCompanyId);
-    const role = activeCompany?.role || 'Viewer';
     const isBuMode = !!activeCompany?.has_business_units;
-    const canTest = role === 'Admin' || role === 'Risk Manager' || role === 'CRO' || role === 'Consultant CRO';
+    const canTest = usePermission('control.test') !== 'none';
     const [allDepartments, setAllDepartments] = useState([]);
     const [allBus, setAllBus] = useState([]);
     useEffect(() => {

@@ -4,11 +4,29 @@
 //     CRO approval power); both are planned for removal/consolidation once
 //     Super Admin and Consultant CRO are deleted from the app (not yet
 //     done — see CLAUDE.md "Engineering — pending items").
-//   - croCanApprove() — CRO/Consultant CRO/Super Admin final approval gate.
-//   - canManageLifecycle — Close/Reopen: Risk Manager, CRO, Consultant CRO,
-//     Super Admin.
-//   - canEditMaps — mitigation action plan edits: everyone except Admin
-//     and Viewer.
+//   - croCanApprove() — CRO/Consultant CRO/Super Admin final approval gate;
+//     deliberately left as role-literal business logic (manager-approval-
+//     chain rule), not a single capability check, same Phase C precedent
+//     as every other approval-chain route.
+//   - canApproveFirstLine (risk.approve_first_line), canCloseRisk
+//     (risk.close), canReopenRisk (risk.reopen), risk.cro_accept (CRO
+//     Action Panel) — Phase D batch 5 (2026-07-23): live capability checks,
+//     replacing role-literal lists that were missing Admin/Super Admin
+//     even though the backend already granted them access.
+//   - canEditNonDraftRisk — Edit Risk button for already-submitted risks:
+//     Risk Manager, CRO, Consultant CRO, Super Admin only. Deliberately
+//     NOT a capability check and NOT given to Admin, Risk Champion, or
+//     Risk Owner — risk.edit is seeded 'none' for Admin (role governance
+//     v2), and Risk Champion/Risk Owner are confirmed (2026-07-23,
+//     Chandrashekar) to only be allowed to edit a risk while it is still
+//     in Draft status, which is handled separately via onEditDraft/
+//     r.approval_status === 'Draft'. The backend's PATCH /api/risks/:id
+//     enforces this same Draft-only restriction server-side as of
+//     2026-07-23, closing a prior gap where a direct API call could
+//     bypass the frontend's restriction.
+//   - canEditMaps (risk.mitigation.manage) — mitigation action plan edits;
+//     cut over to a live capability check in Phase D batch 5, adding Admin
+//     (the backend's mitigation routes already granted them access).
 //   - submitterRefs / isLocked (department field) — a UX default/lock
 //     derived from the submitter's role and department scope, not a
 //     permission gate; see server.js's Risk Register section header for
@@ -17,7 +35,7 @@
 // Full detail: Documents/Internal/RBAC_Permissions_Engine_Scoping.docx
 // section 3.6.
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { useAuth } from '../AuthContext';
+import { useAuth, usePermission } from '../AuthContext';
 import scoreBadge from '../components/scoreBadge';
 import EvidenceAttachments from '../components/EvidenceAttachments';
 import RiskLibraryModal from '../components/RiskLibraryModal';
@@ -182,6 +200,17 @@ export default function RiskRegister({ fromIncidentId = null, onIncidentLinked =
     const role = activeCompany?.role;
     const isSuperAdmin = role === 'Super Admin';
     const isBuMode = !!activeCompany?.has_business_units;
+    // Phase D batch 5: canApproveFirstLine (risk.approve_first_line -- Admin,
+    // Super Admin, Risk Owner = full) and canCloseRisk (risk.close -- Admin,
+    // Super Admin, CRO, Consultant CRO, Risk Manager = full) replace the old
+    // role-literal checks below, which were missing Admin/Super Admin even
+    // though the backend already granted them access via requireRole()'s
+    // bypass, then can('risk.approve_first_line')/can('risk.close') after
+    // Phase C. croCanApprove()'s own manager-approval-chain logic is left
+    // untouched, per established Phase C precedent for business-rule-coupled
+    // routes.
+    const canApproveFirstLine = usePermission('risk.approve_first_line') !== 'none';
+    const canCloseRisk = usePermission('risk.close') !== 'none';
 
     const [risks, setRisks] = useState([]);
     const [categories, setCategories] = useState([]);
@@ -560,7 +589,7 @@ export default function RiskRegister({ fromIncidentId = null, onIncidentLinked =
                                                         </button>
                                                     </div>
                                                 )}
-                                                {role === 'Risk Owner' && r.approval_status === 'Awaiting Approver' && (
+                                                {canApproveFirstLine && r.approval_status === 'Awaiting Approver' && (
                                                     <div style={{ display: 'flex', gap: 4 }}>
                                                         <button
                                                             className="btn btn-sm btn-primary"
@@ -582,7 +611,7 @@ export default function RiskRegister({ fromIncidentId = null, onIncidentLinked =
                                                         </button>
                                                     </div>
                                                 )}
-                                                {(role === 'CRO' || role === 'Consultant CRO' || role === 'Risk Manager' || isSuperAdmin) &&
+                                                {canCloseRisk &&
                                                     r.approval_status === 'Approved' &&
                                                     r.risk_status !== 'Closed' && (
                                                     <button
@@ -692,7 +721,21 @@ export function RiskDetail({ risk: r, api, onClose, onReopen, onRefresh, onEditD
     const [closureReason, setClosureReason] = useState('');
     const [showReopenForm, setShowReopenForm] = useState(false);
     const [reopenReason, setReopenReason] = useState('');
-    const canManageLifecycle = role === 'Risk Manager' || role === 'CRO' || role === 'Consultant CRO' || isSuperAdmin;
+    // Phase D batch 5: canManageLifecycle bundled three different actions
+    // (Edit Risk, Close, Reopen) under one role-literal check. Split so
+    // Close/Reopen can move to live capability checks (risk.close /
+    // risk.reopen -- both seeded full for Admin too, which this old check
+    // was missing) while Edit Risk stays on the original, deliberately
+    // narrower role set: risk.edit is seeded 'none' for Admin (per the
+    // "Admin is no longer permitted to create or approve risks -- role
+    // governance v2" business rule), and Risk Champion/Risk Owner are
+    // confirmed (2026-07-23, Chandrashekar) to only be allowed to edit a
+    // risk while it is still in Draft status (handled separately, above,
+    // via onEditDraft) -- so this flag must NOT become a capability check
+    // and must NOT gain Admin, Risk Champion, or Risk Owner.
+    const canEditNonDraftRisk = role === 'Risk Manager' || role === 'CRO' || role === 'Consultant CRO' || isSuperAdmin;
+    const canCloseRisk = usePermission('risk.close') !== 'none';
+    const canReopenRisk = usePermission('risk.reopen') !== 'none';
     const [related, setRelated] = useState(null);
     const [relatedError, setRelatedError] = useState('');
     const [newRelatedUid, setNewRelatedUid] = useState('');
@@ -706,7 +749,13 @@ export function RiskDetail({ risk: r, api, onClose, onReopen, onRefresh, onEditD
 
     // ── MAP state (ENH-14) ──────────────────────────────────────────────────────
     const MAP_STATUSES = ['Pending', 'In Progress', 'Complete', 'Deferred', 'Cancelled'];
-    const canEditMaps = role !== 'Admin' && role !== 'Viewer';
+    // Was role !== 'Admin' && role !== 'Viewer' -- risk.mitigation.manage is
+    // seeded full for Admin too (the backend's POST/PUT/DELETE mitigation
+    // routes already used can('risk.mitigation.manage') since Phase C batch
+    // 2), so Admin's button was hidden even though the API call would have
+    // succeeded. Viewer remains excluded since the capability is seeded
+    // 'none' for them.
+    const canEditMaps = usePermission('risk.mitigation.manage') !== 'none';
     const [mapModal, setMapModal] = useState(null); // { map: existing|null }
     const [mapForm, setMapForm] = useState({});
     const [mapBusy, setMapBusy] = useState(false);
@@ -896,12 +945,12 @@ export function RiskDetail({ risk: r, api, onClose, onReopen, onRefresh, onEditD
                             ✎ Edit Draft
                         </button>
                     )}
-                    {r.approval_status !== 'Draft' && r.risk_status !== 'Closed' && canManageLifecycle && onEditDraft && (
+                    {r.approval_status !== 'Draft' && r.risk_status !== 'Closed' && canEditNonDraftRisk && onEditDraft && (
                         <button type="button" className="btn btn-sm btn-secondary" onClick={() => onEditDraft(r)}>
                             ✎ Edit Risk
                         </button>
                     )}
-                    {canManageLifecycle && r.risk_status !== 'Closed' && (
+                    {canCloseRisk && r.risk_status !== 'Closed' && (
                         showCloseForm ? (
                             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                                 <input
@@ -918,7 +967,7 @@ export function RiskDetail({ risk: r, api, onClose, onReopen, onRefresh, onEditD
                             <button type="button" className="btn btn-sm btn-secondary" onClick={() => setShowCloseForm(true)}>Close Risk</button>
                         )
                     )}
-                    {canManageLifecycle && r.risk_status === 'Closed' && (
+                    {canReopenRisk && r.risk_status === 'Closed' && (
                         <>
                             {r.closure_reason && <div className="text-muted" style={{ fontSize: 12, textAlign: 'right' }}>Closed: {r.closure_reason}</div>}
                             {showReopenForm ? (
@@ -1062,7 +1111,12 @@ export function RiskDetail({ risk: r, api, onClose, onReopen, onRefresh, onEditD
         </div>
 
         {/* ── CRO Action Panel ─────────────────────────────────────────────── */}
-        {(role === 'CRO' || role === 'Consultant CRO' || isSuperAdmin) && csoStatus === 'pending_cro' && (
+        {/* Was role === 'CRO' || role === 'Consultant CRO' || isSuperAdmin --
+            risk.cro_accept is seeded full for Admin too (server.js's
+            /cro-accept and /cro-comment routes already use
+            can('risk.cro_accept')), so Admin's panel was hidden even though
+            the API call would have succeeded. */}
+        {usePermission('risk.cro_accept') !== 'none' && csoStatus === 'pending_cro' && (
             <div className="card" style={{ marginBottom: 16, background: 'var(--color-warning-bg, #fff8e1)', border: '1px solid var(--color-warning, #f5a623)' }}>
                 <h3 style={{ margin: '0 0 16px' }}>CRO Risk Acceptance</h3>
                 {csoError && <div className="alert alert-error" style={{ marginBottom: 8 }}>{csoError}</div>}

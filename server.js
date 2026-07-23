@@ -3729,9 +3729,25 @@ app.patch(
             if (risk.assessed_by !== req.user.email) {
                 return res.status(403).json({ error: 'You may only edit your own submissions.' });
             }
+            // Confirmed 2026-07-23 (Chandrashekar): Risk Champion may only edit
+            // a risk while it is still in Draft status -- the frontend has
+            // always enforced this (RiskRegister.jsx only renders "Edit Risk"
+            // for Draft rows via onEditDraft), but this API route had no
+            // equivalent check, so a direct call could bypass it. 'own' scope
+            // is seeded only for Risk Champion, so this applies to them alone.
+            if (risk.approval_status !== 'Draft') {
+                return res.status(403).json({ error: 'This risk has already been submitted and can no longer be edited.' });
+            }
         } else if (req.scope === 'dept') {
             if (!await managerCanAccess(req, risk.department)) {
                 return res.status(403).json({ error: 'You may only edit risks in your own department(s).' });
+            }
+            // Same Draft-only policy as above, but 'dept' scope is shared by
+            // both Risk Manager and Risk Owner, and only Risk Owner is
+            // restricted to Draft-only -- Risk Manager retains full dept-wide
+            // edit authority on submitted risks, unchanged.
+            if (role === 'Risk Owner' && risk.approval_status !== 'Draft') {
+                return res.status(403).json({ error: 'Risk Owner may only edit a risk while it is still in Draft status.' });
             }
         }
         // 'full' (CRO, Consultant CRO, Admin, Super Admin): no restriction — falls through
