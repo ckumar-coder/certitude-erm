@@ -1,10 +1,15 @@
-// OrgRoles.jsx — Org Roles (RACI) page. `canManageRaci` gates RACI matrix
-// edits (Admin, CRO, Consultant CRO); `canManageDir` gates the underlying
-// Role -> Person -> Department directory and additionally admits Risk
-// Manager. Viewing is broad (incl. Viewer). See
+// OrgRoles.jsx — Org Roles (RACI) page. Phase D batch 8 (2026-07-23): both
+// flags cut over to live capability checks. `canManageRaci` (raci.edit,
+// full for Admin/Super Admin/CRO/Consultant CRO) gates RACI matrix edits;
+// `canManageDir` (org_roles.manage, full for Admin/Super Admin/Risk
+// Manager/CRO/Consultant CRO) gates the Role -> Person -> Department
+// directory. Both were previously role-literal lists missing Super Admin
+// (backend-only access via the bypass/seed). Viewing is broad (incl.
+// Viewer) via org_roles.view/raci.view, unchanged -- this page has no
+// frontend view gate at all, relying entirely on the backend. See
 // Documents/Internal/RBAC_Permissions_Engine_Scoping.docx section 3.6.
 import { useEffect, useState } from 'react';
-import { useAuth } from '../AuthContext';
+import { useAuth, usePermission } from '../AuthContext';
 import { useT } from '../contexts/LanguageContext';
 
 // ── RACI helpers ─────────────────────────────────────────────────────────────
@@ -74,12 +79,10 @@ function RaciCell({ rowId, roleKey, value, canManage, onSave }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 export default function OrgRoles() {
-    const { api, session } = useAuth();
+    const { api } = useAuth();
     const t = useT();
-    const activeCompany = session.companies.find((c) => c.id === session.activeCompanyId);
-    const role = activeCompany?.role || 'Viewer';
-    const canManageRaci = role === 'Admin' || role === 'CRO' || role === 'Consultant CRO';
-    const canManageDir  = role === 'Admin' || role === 'Risk Manager' || role === 'CRO' || role === 'Consultant CRO';
+    const canManageRaci = usePermission('raci.edit') !== 'none';
+    const canManageDir  = usePermission('org_roles.manage') !== 'none';
 
     const [activeTab, setActiveTab] = useState('raci');
 

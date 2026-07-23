@@ -11,13 +11,21 @@
  *   GET    /api/evidence/download/:id           → file download (Content-Disposition: attachment)
  *   DELETE /api/evidence/:id                    → {}
  *
- * Role gating: `canWrite`/`canDelete` (below) — write is Admin, Risk
- * Manager, Risk Champion, Risk Owner, CRO (+ Consultant CRO via the
- * backend's CRO auto-expand rule); delete is Admin only. See
+ * Role gating: Phase D batch 8 (2026-07-23) cut `canWrite`/`canDelete`
+ * over to live capability checks (evidence.upload / evidence.delete).
+ * The old canWrite role-literal list claimed Consultant CRO was admitted
+ * "via the backend's CRO auto-expand rule" -- that auto-expand is a
+ * backend-only mechanism (requireRole()); this frontend flag did a plain
+ * `role === 'CRO'` equality check, which never actually matched
+ * 'Consultant CRO', so the comment was wrong and Consultant CRO's real,
+ * working upload access (confirmed via the old requireRole() list on
+ * POST /api/evidence/:entityType/:entityId, which auto-expanded 'CRO' to
+ * include Consultant CRO on the backend, matching evidence.upload's
+ * seed) was hidden. Both flags were also missing Super Admin. See
  * Documents/Internal/RBAC_Permissions_Engine_Scoping.docx section 3.6.
  */
 import { useEffect, useRef, useState } from 'react';
-import { useAuth } from '../AuthContext';
+import { useAuth, usePermission } from '../AuthContext';
 
 const MAX_BYTES = 2 * 1024 * 1024; // 2 MB
 
@@ -37,11 +45,9 @@ function fileIcon(mimeType) {
 }
 
 export default function EvidenceAttachments({ entityType, entityId }) {
-    const { api, session } = useAuth();
-    const activeCompany = session.companies.find((c) => c.id === session.activeCompanyId);
-    const role = activeCompany?.role || 'Viewer';
-    const canWrite = role === 'Admin' || role === 'Risk Manager' || role === 'Risk Champion' || role === 'Risk Owner' || role === 'CRO';
-    const canDelete = role === 'Admin';
+    const { api } = useAuth();
+    const canWrite = usePermission('evidence.upload') !== 'none';
+    const canDelete = usePermission('evidence.delete') !== 'none';
 
     const [attachments, setAttachments] = useState([]);
     const [loading, setLoading] = useState(true);
