@@ -1,11 +1,25 @@
-// HorizonScanning.jsx — Horizon Scanning page. `canEdit` (below) covers
-// create/edit/convert (Admin, CRO, Consultant CRO, Risk Manager); delete
-// and the AI-draft action are narrower still (Admin, CRO, Consultant CRO
-// only — Risk Manager excluded from just those two, per
-// docs/API_REFERENCE.md "Horizon Scanning"). See
+// HorizonScanning.jsx — Horizon Scanning page. Phase D batch 9 (2026-07-23)
+// cut every local role-literal flag over to live capability checks
+// (horizon.view / horizon.manage / horizon.ai_draft). This closed a real,
+// user-facing bug, not just a corrective missing-Super-Admin fix: this
+// file's flags had never been updated after Phase D batch 2's decision
+// (2026-07-23, same day) narrowed Horizon Scanning access to Super Admin /
+// CRO / Consultant CRO only (App.jsx's page gate and Layout.jsx's nav item
+// were both updated then; this component was not). Since the old literal
+// list here was `['Admin', 'CRO', 'Consultant CRO', 'Risk Manager']` --
+// missing 'Super Admin' entirely -- a Super Admin who reached the page
+// (which the nav/page gate already allowed) saw a fully read-only view: no
+// "+ Add signal" button, no Edit/Convert/Dismiss/Publish actions -- despite
+// being one of the three roles the same-day decision explicitly granted
+// full access to. Admin/Risk Manager being still-listed was harmless (the
+// page gate already blocks them from ever reaching this component), but
+// stale and removed for accuracy. The AI-draft action, previously ungated
+// by role here (any role reaching the page could see the "AI scan"
+// button, gated only by whether an AI key is configured), now also checks
+// `horizon.ai_draft` explicitly. See
 // Documents/Internal/RBAC_Permissions_Engine_Scoping.docx section 3.6.
 import { useEffect, useState, useCallback } from 'react';
-import { useAuth } from '../AuthContext';
+import { useAuth, usePermission } from '../AuthContext';
 import { useT } from '../contexts/LanguageContext';
 
 const CATEGORIES  = ['Regulatory', 'Geopolitical', 'Technology', 'Economic', 'Environmental', 'Social'];
@@ -50,9 +64,9 @@ function StatusBadge({ status }) {
     );
 }
 
-function SignalCard({ signal, onView, onEdit, onConvert, onPublish, onDismiss, userRole }) {
-    const canEdit    = ['Admin', 'CRO', 'Consultant CRO', 'Risk Manager'].includes(userRole);
-    const canConvert = ['Admin', 'CRO', 'Consultant CRO', 'Risk Manager'].includes(userRole);
+function SignalCard({ signal, onView, onEdit, onConvert, onPublish, onDismiss }) {
+    const canEdit    = usePermission('horizon.manage') !== 'none';
+    const canConvert = canEdit;
     const isDraft    = signal.status === 'Draft';
     const isDismissed = signal.status === 'Dismissed';
 
@@ -267,8 +281,8 @@ function SignalForm({ initial, onSave, onCancel, submitting }) {
     );
 }
 
-function DetailPanel({ signal, onClose, onEdit, onConvert, onPublish, onDismiss, userRole }) {
-    const canAct = ['Admin', 'CRO', 'Consultant CRO', 'Risk Manager'].includes(userRole);
+function DetailPanel({ signal, onClose, onEdit, onConvert, onPublish, onDismiss }) {
+    const canAct = usePermission('horizon.manage') !== 'none';
     return (
         <div className="card" style={{ marginBottom: 16, borderLeft: signal.status === 'Escalated' ? '3px solid #d97706' : undefined }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
@@ -346,10 +360,8 @@ function DetailPanel({ signal, onClose, onEdit, onConvert, onPublish, onDismiss,
 }
 
 export default function HorizonScanning() {
-    const { api, session } = useAuth();
+    const { api } = useAuth();
     const t = useT();
-    const activeCompany = session?.companies?.find((c) => c.id === session.activeCompanyId);
-    const userRole = activeCompany?.role || '';
 
     const [signals, setSignals]             = useState([]);
     const [hasAiKey, setHasAiKey]           = useState(false);
@@ -460,8 +472,9 @@ export default function HorizonScanning() {
     const nearHigh  = signals.filter((s) => s.time_horizon === 'Near-term (<1yr)' && ['High', 'Critical'].includes(s.potential_impact) && s.status !== 'Dismissed').length;
     const converted = signals.filter((s) => s.status === 'Converted').length;
 
-    const canAdd      = ['Admin', 'CRO', 'Consultant CRO', 'Risk Manager'].includes(userRole);
+    const canAdd      = usePermission('horizon.manage') !== 'none';
     const canSeeDrafts = canAdd;
+    const canAiScan   = usePermission('horizon.ai_draft') !== 'none';
 
     if (loading) return <div className="page-content"><p>Loading…</p></div>;
 
@@ -474,16 +487,18 @@ export default function HorizonScanning() {
                     <p style={{ margin: 0, color: 'var(--color-text-muted)', fontSize: 14 }}>{t('horizon_subtitle')}</p>
                 </div>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <div title={!hasAiKey ? 'No AI API key configured. Contact your Admin.' : 'Draft candidate signals from external sources using AI.'}>
-                        <button
-                            className="btn btn-secondary"
-                            onClick={handleAiScan}
-                            disabled={!hasAiKey || aiScanning}
-                            style={{ opacity: !hasAiKey ? 0.5 : 1, cursor: !hasAiKey ? 'not-allowed' : 'pointer' }}
-                        >
-                            {aiScanning ? 'Scanning…' : '✦ AI scan'}
-                        </button>
-                    </div>
+                    {canAiScan && (
+                        <div title={!hasAiKey ? 'No AI API key configured. Contact your Admin.' : 'Draft candidate signals from external sources using AI.'}>
+                            <button
+                                className="btn btn-secondary"
+                                onClick={handleAiScan}
+                                disabled={!hasAiKey || aiScanning}
+                                style={{ opacity: !hasAiKey ? 0.5 : 1, cursor: !hasAiKey ? 'not-allowed' : 'pointer' }}
+                            >
+                                {aiScanning ? 'Scanning…' : '✦ AI scan'}
+                            </button>
+                        </div>
+                    )}
                     {canAdd && (
                         <button className="btn btn-primary" onClick={() => { setEditSignal(null); setTab('add'); }}>
                             + Add signal
@@ -588,7 +603,7 @@ export default function HorizonScanning() {
 
                     {/* Detail panel */}
                     {viewSignal && (
-                        <DetailPanel signal={viewSignal} userRole={userRole}
+                        <DetailPanel signal={viewSignal}
                             onClose={() => setViewSignal(null)}
                             onEdit={(s) => { setEditSignal(s); setTab('add'); setViewSignal(null); }}
                             onConvert={handleConvert}
@@ -606,7 +621,7 @@ export default function HorizonScanning() {
                     ) : (
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                             {filtered.map((s) => (
-                                <SignalCard key={s.id} signal={s} userRole={userRole}
+                                <SignalCard key={s.id} signal={s}
                                     onView={setViewSignal}
                                     onEdit={(sig) => { setEditSignal(sig); setTab('add'); }}
                                     onConvert={handleConvert}
