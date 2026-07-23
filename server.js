@@ -9030,18 +9030,25 @@ async function recalcAppetiteCategoryBreaches(companyId, categoryFilter = null) 
 // ============================================================
 // Category-level appetite statements (tolerance + approver), distinct
 // from the per-risk appetite threshold on individual risks in the Risk
-// Register. Manage (create/edit/history): Admin, CRO, Consultant CRO.
-//
-// NOTE: the view role list below includes 'Approver', a role name that
-// does not exist in UserManagement.jsx's assignable ROLES array — it can
-// only be set directly in the database, never through the product's own
-// UI. Confirmed still present as of 2026-07-21; see
-// Documents/Internal/RBAC_Permissions_Engine_Scoping.docx Finding 4.
+// Register. Access as of the Phase C cutover (2026-07-23): view --
+// can('risk_appetite.view'), all 8 roles including Viewer; manage
+// (create/edit/history/delete) -- can('risk_appetite.manage'), Admin/Super
+// Admin/CRO/Consultant CRO only. The old dead 'Approver' role string
+// (Finding 4 -- a role name that never existed in UserManagement.jsx's
+// assignable ROLES array) is gone from every route below.
 
 // GET /api/risk-appetite — all current statements for the company, enriched with breach counts
+// Cut over to can('risk_appetite.view') -- resolved 2026-07-23. Viewer was
+// deliberately removed from this route's requireRole list back in
+// schema_v65 (see frontend/src/data/changelog.json), but the seed grants
+// risk_appetite.view 'full' to all 8 roles including Viewer, and
+// Layout.jsx's risk-appetite NAV_ITEMS entry already lists Viewer -- so
+// Viewer saw this nav link but got a 403 clicking it. Chandrashekar
+// confirmed: restore Viewer's real access, matching the seed and the nav
+// item. This also drops the dead 'Approver' role string (Finding 4).
 app.get(
     '/api/risk-appetite',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO', 'Approver'),
+    can('risk_appetite.view'),
     asyncHandler(async (req, res) => {
         const stmtsRes = await pool.query(
             `SELECT * FROM risk_appetite_statements WHERE company_id = $1 AND is_current = TRUE ORDER BY risk_category`,
@@ -9090,9 +9097,12 @@ app.get(
 );
 
 // GET /api/risk-appetite/summary — lightweight summary for management summary panel
+// Cut over to can('risk_appetite.view') -- same resolved Viewer restoration
+// as GET /api/risk-appetite above; see that route's comment for the full
+// explanation.
 app.get(
     '/api/risk-appetite/summary',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO', 'Approver'),
+    can('risk_appetite.view'),
     asyncHandler(async (req, res) => {
         const stmtsRes = await pool.query(
             `SELECT risk_category, appetite_level, max_residual_score FROM risk_appetite_statements
@@ -9125,9 +9135,14 @@ app.get(
 );
 
 // GET /api/risk-appetite/:category — current statement + full version history for one category
+// Cut over to can('risk_appetite.view') -- same resolved Viewer restoration
+// as GET /api/risk-appetite above; see that route's comment for the full
+// explanation. This route was added in schema_v65 alongside the Viewer
+// removal on the other two, so it never had Viewer access to begin with --
+// now gains it for the first time, consistent with the same ruling.
 app.get(
     '/api/risk-appetite/:category',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO', 'Approver'),
+    can('risk_appetite.view'),
     asyncHandler(async (req, res) => {
         const category = req.params.category;
         const currentRes = await pool.query(
@@ -9150,7 +9165,7 @@ app.get(
 // GET /api/risk-appetite/:category/history — version history for a category
 app.get(
     '/api/risk-appetite/:category/history',
-    requireRole('Admin', 'CRO', 'Consultant CRO'),
+    can('risk_appetite.manage'), // Phase C cutover -- was requireRole('Admin', 'CRO', 'Consultant CRO'); exact match (this route's real access has always been manage-tier only, unlike the broader view-tier GET /:category above which already inlines the same history)
     asyncHandler(async (req, res) => {
         const result = await pool.query(
             `SELECT * FROM risk_appetite_statements
@@ -9165,7 +9180,7 @@ app.get(
 // POST /api/risk-appetite — create or update (versions) a category appetite statement
 app.post(
     '/api/risk-appetite',
-    requireRole('Admin', 'CRO', 'Consultant CRO'),
+    can('risk_appetite.manage'), // Phase C cutover -- was requireRole('Admin', 'CRO', 'Consultant CRO'); exact match
     asyncHandler(async (req, res) => {
         const {
             risk_category,
@@ -9311,7 +9326,7 @@ app.post(
 // DELETE /api/risk-appetite/:category — archive (soft-delete) current statement
 app.delete(
     '/api/risk-appetite/:category',
-    requireRole('Admin', 'CRO', 'Consultant CRO'),
+    can('risk_appetite.manage'), // Phase C cutover -- was requireRole('Admin', 'CRO', 'Consultant CRO'); exact match
     asyncHandler(async (req, res) => {
         const result = await pool.query(
             `UPDATE risk_appetite_statements SET is_current = FALSE, updated_at = NOW()
@@ -9331,13 +9346,20 @@ app.delete(
 
 // ─── Scoring Methodology (A5) ────────────────────────────────────────────────
 // Stores company-customised Likelihood/Impact descriptions in company_settings.
-// NOTE: POST (edit) is CRO/Consultant CRO only — Admin is deliberately(?)
-// excluded here, unlike almost every other module. Confirmed still true as
-// of 2026-07-21; flagged as a likely-unintentional gap, not documented
-// policy — see Documents/Internal/RBAC_Permissions_Engine_Scoping.docx
-// Finding 5 and docs/SCOPE_NOTES.md section 14.
+// POST (edit) is gated to CRO/Consultant CRO only, via can('scoring_methodology.manage')
+// as of the Phase C cutover (2026-07-22) -- Admin AND Super Admin are both
+// deliberately excluded, per Decision 2/Finding 5's resolution (kept as
+// CRO-owned risk policy). This is a REAL, INTENTIONAL behavior change on the
+// backend: requireRole()'s universal bypass previously gave Admin/Super Admin
+// latent write access here even though the literal role list never included
+// them and ScoringMethodology.jsx's frontend canManage check already excluded
+// both (confirmed during Phase A seeding, ScoringMethodology.jsx:148). No
+// frontend UI ever exposed this, so closing it is zero user-facing change --
+// see docs/SCOPE_NOTES.md section 14 for the full history of this finding.
 
-app.get('/api/scoring-methodology', requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO', 'Viewer'), asyncHandler(async (req, res) => {
+app.get('/api/scoring-methodology',
+    can('scoring_methodology.view'), // Phase C cutover -- was requireRole(...); exact match, all 8 roles
+    asyncHandler(async (req, res) => {
     const r = await pool.query(
         `SELECT setting_value FROM company_settings WHERE company_id=$1 AND setting_key='scoring_methodology'`,
         [req.company.id]
@@ -9346,7 +9368,9 @@ app.get('/api/scoring-methodology', requireRole('Admin', 'Risk Manager', 'Risk C
     res.json(JSON.parse(r.rows[0].setting_value));
 }));
 
-app.post('/api/scoring-methodology', requireRole('CRO', 'Consultant CRO'), asyncHandler(async (req, res) => {
+app.post('/api/scoring-methodology',
+    can('scoring_methodology.manage'), // Phase C cutover -- was requireRole('CRO', 'Consultant CRO'); intentionally excludes Admin/Super Admin, see module header comment above
+    asyncHandler(async (req, res) => {
     const { likelihood, impact, pillars, currency } = req.body;
     if (!Array.isArray(likelihood) || !Array.isArray(impact))
         return res.status(400).json({ error: 'likelihood and impact arrays required' });
