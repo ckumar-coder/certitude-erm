@@ -1106,6 +1106,57 @@ function _effectiveRoleName(company) {
     return company.functional_role === 'Super Admin' ? 'Super Admin' : company.role;
 }
 
+// ── getPermissionsMap() — Phase D frontend cutover primitive ───────────────
+// (Documents/Internal/RBAC_Permissions_Engine_Scoping.docx, Section 8.2).
+// Batch counterpart to resolveScope(): returns every capability's scope for
+// a company/role in one shot (2 queries, cached whole), rather than one
+// resolveScope() call per capability -- avoids ~81 individual round-trips
+// to build the full session-payload permissions map on every login/auth-me
+// call. Uses the exact same effective-role-name and is_baseline handling as
+// resolveScope() so the two primitives can never disagree.
+const _permissionsMapCache = new Map();
+
+function clearPermissionsMapCache() {
+    _permissionsMapCache.clear();
+}
+
+async function getPermissionsMap(company) {
+    const roleName = _effectiveRoleName(company);
+    const cacheKey = `${company.id}::${roleName}`;
+    if (_permissionsMapCache.has(cacheKey)) return _permissionsMapCache.get(cacheKey);
+
+    const capsRes = await pool.query('SELECT key, is_baseline FROM capabilities');
+    const map = {};
+    const baselineKeys = new Set();
+    for (const c of capsRes.rows) {
+        if (c.is_baseline) {
+            map[c.key] = 'full';
+            baselineKeys.add(c.key);
+        } else {
+            map[c.key] = 'none';
+        }
+    }
+
+    const roleRes = await pool.query(
+        `SELECT id FROM roles WHERE name = $1 AND (company_id IS NULL OR company_id = $2)
+         ORDER BY company_id IS NULL DESC LIMIT 1`,
+        [roleName, company.id]
+    );
+    if (roleRes.rows.length > 0) {
+        const permRes = await pool.query(
+            'SELECT capability_key, scope FROM role_permissions WHERE role_id = $1',
+            [roleRes.rows[0].id]
+        );
+        for (const p of permRes.rows) {
+            if (baselineKeys.has(p.capability_key)) continue; // baseline always wins, never overridden
+            map[p.capability_key] = p.scope;
+        }
+    }
+
+    _permissionsMapCache.set(cacheKey, map);
+    return map;
+}
+
 async function resolveScope(company, capabilityKey) {
     const roleName = _effectiveRoleName(company);
     const cacheKey = `${company.id}::${roleName}::${capabilityKey}`;
@@ -1185,60 +1236,84 @@ function minScope(a, b) {
 // Returns the list of companies (with role) a user has access to.
 // V1.9: also includes subsidiaries reachable via group_access_scope.
 async function getUserCompanies(user) {
+    let companies;
+
     if (user.is_super_admin) {
         const result = await pool.query(
             `SELECT id, name, code, branding_logo_url, branding_primary_color,
                     parent_company_id, max_group_access_scope, industry
              FROM companies WHERE is_active = true ORDER BY name`
         );
-        return result.rows.map((c) => ({
-            ...c, role: 'Admin', department: null, functional_role: null,
+        // functional_role: 'Super Admin' here (not null) to match the real
+        // per-request req.company shape set by the requireCompany middleware
+        // above (~line 1015) -- both must agree, since Phase D's
+        // getPermissionsMap() call below (and Phase C's resolveScope(), via
+        // _effectiveRoleName()) key off this field to grant the
+        // Super-Admin-only risk.auto_approve/etc. exceptions. Before this
+        // fix this branch set functional_role: null, which was harmless
+        // while nothing consumed it, but would have silently shown a
+        // is_super_admin-flagged account Admin-level (not Super-Admin-level)
+        // permissions in the new frontend permissions map -- a real, if
+        // currently only latent (no live account uses this boolean flag;
+        // see the CLAUDE.md finding on the live account's role being the
+        // literal string 'Super Admin' instead), discrepancy.
+        companies = result.rows.map((c) => ({
+            ...c, role: 'Admin', department: null, functional_role: 'Super Admin',
             group_access_scope: 'full', via_group_access: false, effective_group_scope: 'full',
         }));
+    } else {
+        // Direct memberships
+        const directRes = await pool.query(
+            `SELECT c.id, c.name, c.code, c.branding_logo_url, c.branding_primary_color,
+                    c.parent_company_id, c.max_group_access_scope, c.industry,
+                    c.has_business_units,
+                    uc.role, uc.department, uc.departments, uc.business_unit_ids,
+                    uc.functional_role, uc.group_access_scope
+             FROM user_companies uc
+             JOIN companies c ON c.id = uc.company_id
+             WHERE uc.user_id = $1 AND c.is_active = true
+             ORDER BY c.name`,
+            [user.id]
+        );
+        companies = directRes.rows.map((r) => ({ ...r, via_group_access: false }));
+        const seen = new Set(companies.map((c) => c.id));
+
+        // Group access: for each parent company where this user has group_access_scope != 'none',
+        // add the subsidiaries with effective role computed from minScope.
+        const parents = companies.filter((c) => c.group_access_scope && c.group_access_scope !== 'none');
+        for (const parent of parents) {
+            const subRes = await pool.query(
+                `SELECT id, name, code, branding_logo_url, branding_primary_color,
+                        parent_company_id, max_group_access_scope, industry, has_business_units
+                 FROM companies WHERE parent_company_id = $1 AND is_active = true ORDER BY name`,
+                [parent.id]
+            );
+            for (const sub of subRes.rows) {
+                if (seen.has(sub.id)) continue; // already a direct member — direct role takes precedence
+                const effectiveScope = minScope(parent.group_access_scope, sub.max_group_access_scope);
+                if (effectiveScope === 'none') continue;
+                const effectiveRole = effectiveScope === 'full' ? parent.role : 'Viewer';
+                companies.push({
+                    ...sub,
+                    role: effectiveRole,
+                    department: null, functional_role: null, group_access_scope: 'none',
+                    via_group_access: true,
+                    group_via_parent_id: parent.id,
+                    group_via_parent_name: parent.name,
+                    effective_group_scope: effectiveScope,
+                });
+                seen.add(sub.id);
+            }
+        }
     }
 
-    // Direct memberships
-    const directRes = await pool.query(
-        `SELECT c.id, c.name, c.code, c.branding_logo_url, c.branding_primary_color,
-                c.parent_company_id, c.max_group_access_scope, c.industry,
-                c.has_business_units,
-                uc.role, uc.department, uc.departments, uc.business_unit_ids,
-                uc.functional_role, uc.group_access_scope
-         FROM user_companies uc
-         JOIN companies c ON c.id = uc.company_id
-         WHERE uc.user_id = $1 AND c.is_active = true
-         ORDER BY c.name`,
-        [user.id]
-    );
-    const companies = directRes.rows.map((r) => ({ ...r, via_group_access: false }));
-    const seen = new Set(companies.map((c) => c.id));
-
-    // Group access: for each parent company where this user has group_access_scope != 'none',
-    // add the subsidiaries with effective role computed from minScope.
-    const parents = companies.filter((c) => c.group_access_scope && c.group_access_scope !== 'none');
-    for (const parent of parents) {
-        const subRes = await pool.query(
-            `SELECT id, name, code, branding_logo_url, branding_primary_color,
-                    parent_company_id, max_group_access_scope, industry, has_business_units
-             FROM companies WHERE parent_company_id = $1 AND is_active = true ORDER BY name`,
-            [parent.id]
-        );
-        for (const sub of subRes.rows) {
-            if (seen.has(sub.id)) continue; // already a direct member — direct role takes precedence
-            const effectiveScope = minScope(parent.group_access_scope, sub.max_group_access_scope);
-            if (effectiveScope === 'none') continue;
-            const effectiveRole = effectiveScope === 'full' ? parent.role : 'Viewer';
-            companies.push({
-                ...sub,
-                role: effectiveRole,
-                department: null, functional_role: null, group_access_scope: 'none',
-                via_group_access: true,
-                group_via_parent_id: parent.id,
-                group_via_parent_name: parent.name,
-                effective_group_scope: effectiveScope,
-            });
-            seen.add(sub.id);
-        }
+    // Phase D: attach each company's full capability->scope map, so the
+    // frontend's session payload carries live permissions data instead of
+    // re-deriving isCRO/isOp/canX from the raw role string. Computed here
+    // (not per-route) since this is the single shared function behind both
+    // /api/auth/login and /api/auth/me.
+    for (const c of companies) {
+        c.permissions = await getPermissionsMap({ id: c.id, role: c.role, functional_role: c.functional_role });
     }
 
     return companies;
@@ -5272,8 +5347,13 @@ app.put(
             // Phase C: any can() call already resolved for this role is now
             // stale -- drop the whole cache (cheap; it only ever holds a
             // handful of entries) so the new scopes apply to the very next
-            // request, not just future logins.
+            // request, not just future logins. Also drop the Phase D
+            // permissions-map cache (getPermissionsMap()) for the same
+            // reason -- otherwise a saved change wouldn't show up in the
+            // frontend's session.companies[].permissions map until an app
+            // restart, since that cache has no TTL either.
             clearScopeCache();
+            clearPermissionsMapCache();
 
             await logAudit(null, {
                 companyId: req.company.id,
@@ -6366,13 +6446,19 @@ app.get(
 
 app.get(
     '/api/audit-log',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO'),
-    // RBAC-02: Viewer excluded — audit log contains company-wide change history.
-    // This backend decision IS intentional, but Layout.jsx's NAV_ITEMS still
-    // shows the Audit Log sidebar link to Viewer regardless — so a Viewer
-    // sees a working-looking link that 403s when clicked. The frontend nav
-    // item is the actual bug here, not this role list. See
-    // Documents/Internal/RBAC_Permissions_Engine_Scoping.docx Finding 2.
+    can('audit_log.view'), // Phase D cutover -- was requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO')
+    // RBAC-02, resolved: the comment that used to live here claimed excluding
+    // Viewer was intentional -- that predates Decision 2/Finding 2, which
+    // resolved the opposite: Viewer gains audit_log.view, and Decision 3
+    // additionally made it a non-configurable safety baseline (always 'full'
+    // for every role, present or future -- see getPermissionsMap()/can()).
+    // This route was never cut over during Phase C's ten module batches
+    // (Audit Log wasn't one of them), so it was still enforcing the old,
+    // superseded role list even though the capability seed had already
+    // moved on. Fixed as part of Phase D wiring up Layout.jsx's Audit Log
+    // nav item to the same capability -- without this, Viewer would have
+    // gained a working-looking nav link that still 403'd, the exact bug
+    // Finding 2 was about, just re-created from the other direction.
     asyncHandler(async (req, res) => {
         const { entity_type, entity_id } = req.query;
         const conditions = ['company_id = $1'];

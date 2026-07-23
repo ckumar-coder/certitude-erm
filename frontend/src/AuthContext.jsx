@@ -240,3 +240,24 @@ export function useAuth() {
     if (!ctx) throw new Error('useAuth must be used within AuthProvider');
     return ctx;
 }
+
+// ── usePermission() — Phase D frontend cutover primitive ───────────────────
+// (Documents/Internal/RBAC_Permissions_Engine_Scoping.docx, Section 8.2).
+// Reads the capability->scope map the backend now attaches to every entry
+// in session.companies[] (getPermissionsMap(), server.js) for the currently
+// active company, replacing hand-derived role comparisons like
+// `role === 'Admin' || role === 'Risk Manager' || ...` one call site at a
+// time. Returns 'none' | 'own' | 'dept' | 'full' -- same vocabulary as the
+// backend's can()/req.scope, so a call site can do
+// `usePermission('control.edit') !== 'none'` for a plain gate, or switch on
+// the exact scope where it matters (e.g. an 'own'-scoped edit button that
+// should only show for the user's own records).
+// Returns 'none' (not a throw) before the session/permissions map has
+// loaded, so components can call this unconditionally during the loading
+// state without an extra guard.
+export function usePermission(capabilityKey) {
+    const { session } = useAuth();
+    if (!session) return 'none';
+    const activeCompany = session.companies?.find((c) => c.id === session.activeCompanyId);
+    return activeCompany?.permissions?.[capabilityKey] || 'none';
+}

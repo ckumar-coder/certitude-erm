@@ -1331,12 +1331,19 @@ async function testRBAC() {
         ok('Viewer: GET /api/users → 403');
     });
 
-    await test('Viewer: GET /api/audit-log → 403 (Admin/Manager only)', async () => {
+    await test('Viewer: GET /api/audit-log → 200 (audit_log.view is a safety-baseline capability, full for every role)', async () => {
+        // Was asserted as 403 -- that predated Decision 2/Finding 2
+        // (Viewer gains audit_log.view) and Decision 3 (made a
+        // non-configurable safety baseline). The backend route itself was
+        // only cut over to can('audit_log.view') as part of the Phase D
+        // Layout.jsx nav cutover (2026-07-23), which is what surfaced this
+        // stale assertion -- same pattern as the earlier Viewer/GET
+        // /api/risks correction in Phase C batch 2.
         const saved = token; token = S.vwToken;
         const r = await api('GET', '/api/audit-log');
         token = saved;
-        assert(r.status === 403, `Expected 403, got ${r.status}: ${JSON.stringify(r.data)}`);
-        ok('Viewer: GET /api/audit-log → 403');
+        assert(r.status === 200, `Expected 200, got ${r.status}: ${JSON.stringify(r.data)}`);
+        ok('Viewer: GET /api/audit-log → 200');
     });
 }
 

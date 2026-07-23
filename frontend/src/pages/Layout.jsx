@@ -9,11 +9,13 @@ import certitudeLogo from '../assets/certitude-logo.png';
 
 // Nav items grouped by section. 'group' is the section heading shown in the
 // sidebar; items with no group (undefined) render ungrouped at the top.
-const CRO_ROLES = ['Super Admin', 'Admin', 'Risk Manager', 'CRO', 'Consultant CRO'];
-const OP_ROLES  = ['Super Admin', 'Risk Manager', 'Risk Owner', 'CRO', 'Consultant CRO'];
+// Phase D cutover (2026-07-23): most items below now resolve visibility via
+// a `capability` key instead of a role list -- CRO_ROLES/OP_ROLES/WORKFLOW
+// are gone (no remaining call sites); ALL_ROLES and NON_ADMIN are kept for
+// the handful of items with no corresponding capability (see the NAV_ITEMS
+// header comment below).
 const ALL_ROLES = ['Super Admin', 'Admin', 'Risk Champion', 'Risk Owner', 'Risk Manager', 'CRO', 'Viewer', 'Consultant CRO'];
 const NON_ADMIN = ['Super Admin', 'Risk Champion', 'Risk Owner', 'Risk Manager', 'CRO', 'Consultant CRO', 'Viewer'];
-const WORKFLOW  = ['Super Admin', 'Risk Champion', 'Risk Owner', 'Risk Manager', 'CRO', 'Consultant CRO'];
 
 // Arabic translations keyed by nav item id
 const AR_LABELS = {
@@ -59,66 +61,114 @@ const AR_GROUPS = {
     'Strategic Intelligence': 'الاستخبارات الاستراتيجية',
 };
 
+// Phase D cutover (2026-07-23): most items now carry a `capability` key
+// instead of (or alongside) a hardcoded `roles` array -- visibility is
+// resolved against session.companies[].permissions (getPermissionsMap(),
+// server.js) rather than a role-string comparison. Every mapping below was
+// individually cross-checked against the seeded role_permissions data, the
+// matching App.jsx page gate, and (where already cut over) the backing
+// backend route before being wired up here -- see
+// Documents/Internal/RBAC_Permissions_Engine_Scoping.docx Section 8.2/10.
+//
+// A handful of items have no `capability` at all and keep the old
+// `roles` array unchanged, because no capability exists for them in the
+// Section 7 taxonomy:
+//   - 'critical-risks' -- no dedicated capability; App.jsx's page gate is
+//     also fully ungated (everyone). Left as a hardcoded NON_ADMIN list.
+//   - 'access-matrix' -- retired for Admin/Super Admin as of Phase B; the
+//     page itself is a static, hand-typed reference with no backend route
+//     at all (see AccessMatrix.jsx), so there is nothing for a capability
+//     to represent. Left hardcoded to CRO/Consultant CRO, noBypass: true.
+//   - 'glossary' -- GET /api/glossary has no role gate at all (open to any
+//     authenticated user); ALL_ROLES here just documents that, not a real
+//     restriction. Left hardcoded.
+//
+// Two real, confirmed behavior changes ship with this cutover (both
+// reviewed and approved before implementing, not silently decided):
+//   - 'horizon-scanning': was CRO/Consultant CRO/Risk Manager only; the
+//     seeded horizon.view capability (and App.jsx's already-ungated page
+//     gate) also cover Admin, Super Admin, Risk Champion, and Risk Owner --
+//     they gain a working nav link to a page they could already reach by
+//     URL.
+//   - 'data-tools' (Import/Export): was CRO_ROLES only (no Risk Champion);
+//     the backing backend routes (/api/import/:module, /api/export/:module)
+//     already grant Risk Champion full access via their literal
+//     requireRole() list -- confirmed by reading the live routes, not
+//     assumed. App.jsx's page gate needed the matching one-line fix (see
+//     App.jsx) since without it the nav link would have led nowhere.
+//
+// Every other capability-based item below is an exact match with today's
+// real effective access (nav role array + the Admin/Super-Admin bypass
+// below, cross-checked against App.jsx's page gate) EXCEPT for a uniform,
+// single-root-cause gap repeated across ~9 items: the nav's `roles` array
+// simply never had plain 'Admin' added, even though App.jsx's page gate
+// and the backend capability both already grant Admin full access (Admin
+// could only reach these pages via the default-landing fallback or a typed
+// URL, never the sidebar). Cutting over fixes this uniformly wherever it
+// applied: management-summary, my-tasks, policies, controls, kris,
+// kri-register, issues, obligations, calendar, org-roles, incident-log.
 const NAV_ITEMS = [
     // ── Cross-cutting (ungrouped, always at top) ──
-    { id: 'management-summary', label: 'Dashboard', roles: NON_ADMIN },
-    { id: 'my-tasks',           label: 'My Tasks',           roles: WORKFLOW },
+    { id: 'management-summary', label: 'Dashboard', capability: 'dashboard.management_summary.view' },
+    { id: 'my-tasks',           label: 'My Tasks',  capability: 'tasks.my_tasks.view' },
 
     // ── Governance ──
-    { id: 'policies',   label: 'Policy Repository', roles: [...OP_ROLES, 'Viewer', 'Risk Champion'], group: 'Governance' },
+    { id: 'policies',   label: 'Policy Repository', capability: 'policy.view', group: 'Governance' },
 
     // ── Strategic Intelligence ──
-    { id: 'horizon-scanning',    label: 'Horizon Scanning',     roles: ['CRO', 'Consultant CRO', 'Risk Manager'], group: 'Strategic Intelligence' },
-    { id: 'org-roles',           label: 'Org Roles (RACI)',     roles: NON_ADMIN, group: 'Strategic Intelligence' },
-    { id: 'risk-appetite',       label: 'Risk Appetite',        roles: [...CRO_ROLES, 'Risk Champion', 'Risk Owner', 'Viewer'], group: 'Strategic Intelligence' },
-    { id: 'scoring-methodology', label: 'Scoring Methodology',  roles: [...CRO_ROLES, 'Risk Champion', 'Risk Owner', 'Viewer'], group: 'Strategic Intelligence' },
+    { id: 'horizon-scanning',    label: 'Horizon Scanning',     capability: 'horizon.view', group: 'Strategic Intelligence' },
+    { id: 'org-roles',           label: 'Org Roles (RACI)',     capability: 'org_roles.view', group: 'Strategic Intelligence' },
+    { id: 'risk-appetite',       label: 'Risk Appetite',        capability: 'risk_appetite.view', group: 'Strategic Intelligence' },
+    { id: 'scoring-methodology', label: 'Scoring Methodology',  capability: 'scoring_methodology.view', group: 'Strategic Intelligence' },
 
     // ── Risk ──
-    { id: 'risks',               label: 'Risk Register',       roles: ['Admin', ...OP_ROLES, 'Risk Champion', 'Viewer'], group: 'Risk' },
-    { id: 'critical-risks',      label: 'Critical Risks Log',  roles: NON_ADMIN, group: 'Risk' },
-    { id: 'controls',            label: 'Control Library',     roles: [...OP_ROLES, 'Risk Champion', 'Viewer'], group: 'Risk' },
-    { id: 'kris',                label: 'KRI Library',         roles: [...OP_ROLES, 'Risk Champion', 'Viewer'], group: 'Risk' },
-    { id: 'kri-register',        label: 'KRI Register',        roles: [...OP_ROLES, 'Risk Champion', 'Viewer'], group: 'Risk' },
-    { id: 'issues',              label: 'Issues & Actions',    roles: [...OP_ROLES, 'Risk Champion', 'Viewer'], group: 'Risk' },
-    { id: 'incident-log',        label: 'Incident Log',        roles: [...OP_ROLES, 'Risk Champion', 'Viewer'], group: 'Risk' },
-    { id: 'risk-gov-docs',        label: 'Risk Gov. Documents',       roles: ['Admin', 'Super Admin', 'CRO', 'Consultant CRO', 'Risk Manager'], group: 'Risk' },
-    { id: 'forms-templates',      label: 'Forms & Templates',         roles: ['Admin', 'Super Admin', 'CRO', 'Consultant CRO'], group: 'Risk' },
+    { id: 'risks',               label: 'Risk Register',       capability: 'risk.view', group: 'Risk' },
+    { id: 'critical-risks',      label: 'Critical Risks Log',  roles: NON_ADMIN, group: 'Risk' }, // no capability -- see header note
+    { id: 'controls',            label: 'Control Library',     capability: 'control.view', group: 'Risk' },
+    { id: 'kris',                label: 'KRI Library',         capability: 'kri.view', group: 'Risk' },
+    { id: 'kri-register',        label: 'KRI Register',        capability: 'kri.view', group: 'Risk' },
+    { id: 'issues',              label: 'Issues & Actions',    capability: 'issue.view', group: 'Risk' },
+    { id: 'incident-log',        label: 'Incident Log',        capability: 'incident.view', group: 'Risk' },
+    { id: 'risk-gov-docs',        label: 'Risk Gov. Documents',       capability: 'risk_gov_docs.view', group: 'Risk' },
+    { id: 'forms-templates',      label: 'Forms & Templates',         capability: 'forms.accepted_risk_report', group: 'Risk' },
 
     // ── Compliance ──
-    { id: 'obligations', label: 'Compliance Obligations', roles: [...OP_ROLES, 'Risk Champion', 'Viewer'], group: 'Compliance' },
-    { id: 'calendar',    label: 'Compliance Calendar',    roles: [...OP_ROLES, 'Risk Champion', 'Viewer'], group: 'Compliance' },
+    { id: 'obligations', label: 'Compliance Obligations', capability: 'obligation.view', group: 'Compliance' },
+    { id: 'calendar',    label: 'Compliance Calendar',    capability: 'calendar.view', group: 'Compliance' },
 
     // ── Admin (ordered by setup sequence) ──
-    { id: 'branding',         label: 'Branding',           roles: ['Admin'], group: 'Admin' },
-    { id: 'companies',        label: 'Company Structure',  roles: ['Admin'], group: 'Admin' },
-    { id: 'business-units',   label: 'Business Units',     roles: ['Admin'], group: 'Admin' },
-    { id: 'departments',      label: 'Departments',        roles: ['Admin'], group: 'Admin' },
-    { id: 'users',            label: 'Users & Access',     roles: ['Admin'], group: 'Admin' },
-    { id: 'roles-permissions', label: 'Roles & Permissions', roles: ['Admin'], group: 'Admin' },
+    { id: 'branding',         label: 'Branding',           capability: 'branding.manage', group: 'Admin' },
+    { id: 'companies',        label: 'Company Structure',  capability: 'company.manage', group: 'Admin' },
+    { id: 'business-units',   label: 'Business Units',     capability: 'business_units.manage', group: 'Admin' },
+    { id: 'departments',      label: 'Departments',        capability: 'departments.manage', group: 'Admin' },
+    { id: 'users',            label: 'Users & Access',     capability: 'users.manage', group: 'Admin' },
+    { id: 'roles-permissions', label: 'Roles & Permissions', capability: 'roles.manage', group: 'Admin' },
     // Access Matrix retired for Admin/Super Admin as of Phase B — see App.jsx.
     // Left in place for CRO/Consultant CRO only, who still use it as a
-    // reference. noBypass: true opts this item out of the blanket
-    // Admin/Super-Admin "see every nav item" rule below, since App.jsx no
-    // longer has a matching route for them (they use Roles & Permissions
-    // instead) — without this flag the link stayed visible to Admin/Super
-    // Admin but pointed at nothing.
+    // reference. No capability represents this page (see header note).
+    // noBypass: true opts this item out of the blanket Admin/Super-Admin
+    // "see every nav item" rule below, since App.jsx no longer has a
+    // matching route for them (they use Roles & Permissions instead) —
+    // without this flag the link stayed visible to Admin/Super Admin but
+    // pointed at nothing.
     { id: 'access-matrix',   label: 'Access Matrix',      roles: ['CRO', 'Consultant CRO'], group: 'Admin', noBypass: true },
-    { id: 'risk-config',      label: 'Risk Configuration', roles: ['Admin'], group: 'Admin' },
-    { id: 'escalation-rules', label: 'Escalation Rules',   roles: ['Admin', 'CRO', 'Consultant CRO'], group: 'Admin' },
-    { id: 'email-settings',   label: 'Email Settings',     roles: ['Admin'], group: 'Admin' },
-    { id: 'ai-integration',   label: 'AI Integration',     roles: ['Admin'], group: 'Admin' },
-    { id: 'storage-health',   label: 'Storage & Health',   roles: ['Admin'], group: 'Admin' },
+    { id: 'risk-config',      label: 'Risk Configuration', capability: 'risk_config.manage', group: 'Admin' },
+    { id: 'escalation-rules', label: 'Escalation Rules',   capability: 'escalation_rules.manage', group: 'Admin' },
+    { id: 'email-settings',   label: 'Email Settings',     capability: 'email_settings.manage', group: 'Admin' },
+    { id: 'ai-integration',   label: 'AI Integration',     capability: 'ai_settings.manage', group: 'Admin' },
+    { id: 'storage-health',   label: 'Storage & Health',   capability: 'storage.manage', group: 'Admin' },
 
     // ── Cross-cutting (ungrouped — below Admin so utility items stay at the bottom) ──
-    { id: 'glossary',   label: 'Glossary',          roles: ALL_ROLES },
-    { id: 'audit',      label: 'Audit Log',         roles: ALL_ROLES },
-    { id: 'data-tools', label: 'Import / Export',   roles: CRO_ROLES },
+    { id: 'glossary',   label: 'Glossary',          roles: ALL_ROLES }, // GET /api/glossary has no role gate -- see header note
+    { id: 'audit',      label: 'Audit Log',         capability: 'audit_log.view' },
+    { id: 'data-tools', label: 'Import / Export',   capability: 'data.export' },
 ];
 
 export default function Layout({ page, onNavigate, children, groupView }) {
     const { session, logout, openCompanyPicker, idleWarning, dismissIdleWarning } = useAuth();
     const activeCompany = session.companies.find((c) => c.id === session.activeCompanyId);
     const role = activeCompany?.role || 'Viewer';
+    const permissions = activeCompany?.permissions || {};
     const isConsultant = !!session.user.is_consultant;
     const branding = useBranding();
     const { lang, setLang } = useLanguage();
@@ -185,10 +235,19 @@ export default function Layout({ page, onNavigate, children, groupView }) {
     // Resolve dept code → full name (falls back to the raw value if not found)
     const resolveDept = (code) => code ? (deptMap[code.toLowerCase()] || code) : null;
 
-    const visibleItems = NAV_ITEMS.filter((item) =>
-        item.roles.includes(role) ||
-        ((role === 'Admin' || role === 'Super Admin') && !item.noBypass)
-    ).filter((item) =>
+    // Capability-based items (the majority, post-Phase D) are resolved
+    // against the live permissions map -- no separate Admin/Super-Admin
+    // bypass needed here, since Phase A already seeds both roles at 'full'
+    // on nearly every capability (the two documented exceptions --
+    // scoring_methodology.manage, risk.auto_approve -- aren't behind any
+    // nav item). The three items with no capability (critical-risks,
+    // access-matrix, glossary; see the NAV_ITEMS header comment) keep the
+    // old role-array + bypass check unchanged.
+    const visibleItems = NAV_ITEMS.filter((item) => {
+        if (item.capability) return (permissions[item.capability] || 'none') !== 'none';
+        return item.roles.includes(role) ||
+            ((role === 'Admin' || role === 'Super Admin') && !item.noBypass);
+    }).filter((item) =>
         !(demoMode === 'risk-only' && (item.group === 'Governance' || item.group === 'Compliance'))
     );
 

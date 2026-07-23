@@ -161,7 +161,15 @@ export default function App() {
         content = <ScoringMethodology />;
     } else if (page === 'audit') {
         content = <AuditLog />;
-    } else if (page === 'data-tools' && (isSuperAdmin || role === 'Admin' || isOp)) {
+    } else if (page === 'data-tools' && (isSuperAdmin || role === 'Admin' || isOp || role === 'Risk Champion')) {
+        // Risk Champion added as part of the Phase D Layout.jsx cutover
+        // (2026-07-23) -- the backing backend routes (/api/import/:module,
+        // /api/export/:module) already grant Risk Champion full access via
+        // their literal requireRole() list, confirmed by reading the live
+        // routes, but this page gate and the old Import/Export nav item
+        // both excluded them, so there was no way to reach a feature they
+        // already had real rights to. See Layout.jsx's NAV_ITEMS header
+        // comment for the full cross-check.
         content = <DataTools />;
 
     // ── Always accessible ─────────────────────────────────────────────────────
