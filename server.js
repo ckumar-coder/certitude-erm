@@ -10541,7 +10541,7 @@ const HORIZON_STATUSES    = ['Draft', 'Monitoring', 'Escalated', 'Converted', 'D
 // GET /api/horizon-scans — list signals (Drafts visible to Admin/CRO/Risk Manager only)
 app.get(
     '/api/horizon-scans',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO'),
+    can('horizon.view'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO')
     asyncHandler(async (req, res) => {
         const { status, category, time_horizon, owner } = req.query;
         // Bug fix (2026-07-22): same class of bug as POLICY_TRANSITIONS above --
@@ -10582,7 +10582,7 @@ app.get(
 // POST /api/horizon-scans — create a new signal
 app.post(
     '/api/horizon-scans',
-    requireRole('Admin', 'Risk Manager', 'CRO', 'Consultant CRO'),
+    can('horizon.manage'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'CRO', 'Consultant CRO')
     asyncHandler(async (req, res) => {
         const { title, category, description, source_name, source_url, time_horizon,
                 potential_impact, likelihood, department, notes } = req.body;
@@ -10630,7 +10630,7 @@ app.post(
 // PATCH /api/horizon-scans/:id — update a signal
 app.patch(
     '/api/horizon-scans/:id',
-    requireRole('Admin', 'Risk Manager', 'CRO', 'Consultant CRO'),
+    can('horizon.manage'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'CRO', 'Consultant CRO')
     asyncHandler(async (req, res) => {
         const current = await pool.query(
             'SELECT * FROM horizon_scans WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE',
@@ -10692,7 +10692,7 @@ app.patch(
 // POST /api/horizon-scans/:id/convert — return pre-populated risk payload
 app.post(
     '/api/horizon-scans/:id/convert',
-    requireRole('Admin', 'Risk Manager', 'CRO', 'Consultant CRO'),
+    can('horizon.manage'), // Phase C cutover -- was requireRole('Admin', 'Risk Manager', 'CRO', 'Consultant CRO')
     asyncHandler(async (req, res) => {
         const r = await pool.query(
             'SELECT * FROM horizon_scans WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE',
@@ -10720,7 +10720,7 @@ app.post(
 // DELETE /api/horizon-scans/:id — soft delete
 app.delete(
     '/api/horizon-scans/:id',
-    requireRole('Admin', 'CRO', 'Consultant CRO'),
+    can('horizon.delete'), // Phase C cutover -- was requireRole('Admin', 'CRO', 'Consultant CRO')
     asyncHandler(async (req, res) => {
         const r = await pool.query(
             'SELECT scan_uid FROM horizon_scans WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE',
@@ -10743,7 +10743,7 @@ app.delete(
 // Fetches GCC-relevant RSS/news sources, passes to AI API, creates Draft signals.
 app.post(
     '/api/horizon-scans/ai-draft',
-    requireRole('Admin', 'CRO', 'Consultant CRO'),
+    can('horizon.ai_draft'), // Phase C cutover -- was requireRole('Admin', 'CRO', 'Consultant CRO')
     asyncHandler(async (req, res) => {
         // Check company has an AI key configured
         const companyRow = await pool.query(
