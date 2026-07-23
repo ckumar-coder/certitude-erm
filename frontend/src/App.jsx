@@ -122,54 +122,69 @@ export default function App() {
     const isCRO = role === 'CRO' || role === 'Consultant CRO';
     const isOp  = isSuperAdmin || role === 'Risk Manager' || role === 'Risk Owner' || isCRO;
 
+    // Phase D batch 2 (2026-07-23) — page gates now read from the live
+    // permissions map (session.companies[].permissions) instead of role
+    // literals, mirroring Layout.jsx's batch 1 cutover. `can(key)` treats
+    // any non-'none' scope as "the page is reachable"; scope-specific
+    // filtering (own/dept/full) already happens inside each page's own API
+    // calls, unchanged by this batch. Every mapping below was individually
+    // cross-checked against schema_v75_permissions_engine.sql's seeded
+    // role_permissions rows before being cut over — see CLAUDE.md for the
+    // full batch 2 write-up, including the two flagged/decided exceptions
+    // (Horizon Scanning, Import/Export) below.
+    const permissions = activeCompany?.permissions || {};
+    const can = (key) => permissions[key] && permissions[key] !== 'none';
+
     let content;
 
     // ── Admin-only pages ──────────────────────────────────────────────────────
-    if (page === 'risk-config' && (isSuperAdmin || role === 'Admin')) {
+    if (page === 'risk-config' && can('risk_config.manage')) {
         content = <RiskConfig />;
-    } else if (page === 'users' && (isSuperAdmin || role === 'Admin')) {
+    } else if (page === 'users' && can('users.manage')) {
         content = <UserManagement />;
-    } else if (page === 'roles-permissions' && (isSuperAdmin || role === 'Admin')) {
+    } else if (page === 'roles-permissions' && can('roles.manage')) {
         // Phase B of the permissions engine — additive admin screen only,
         // not yet enforced. See RBAC_Permissions_Engine_Scoping.docx Section 9.
         content = <RolesPermissions />;
-    } else if (page === 'departments' && (isSuperAdmin || role === 'Admin')) {
+    } else if (page === 'departments' && can('departments.manage')) {
         content = <Departments />;
-    } else if (page === 'business-units' && (isSuperAdmin || role === 'Admin')) {
+    } else if (page === 'business-units' && can('business_units.manage')) {
         content = <BusinessUnits />;
-    } else if (page === 'escalation-rules' && (isSuperAdmin || role === 'Admin' || isCRO)) {
+    } else if (page === 'escalation-rules' && can('escalation_rules.manage')) {
         content = <EscalationRules />;
-    } else if (page === 'email-settings' && (isSuperAdmin || role === 'Admin')) {
+    } else if (page === 'email-settings' && can('email_settings.manage')) {
         content = <EmailSettings />;
-    } else if (page === 'ai-integration' && (isSuperAdmin || role === 'Admin')) {
+    } else if (page === 'ai-integration' && can('ai_settings.manage')) {
         content = <AiIntegration />;
-    } else if (page === 'branding' && (isSuperAdmin || role === 'Admin')) {
+    } else if (page === 'branding' && can('branding.manage')) {
         content = <Branding />;
-    } else if (page === 'storage-health' && (isSuperAdmin || role === 'Admin')) {
+    } else if (page === 'storage-health' && can('storage.manage')) {
         content = <StorageHealth />;
-    } else if (page === 'companies' && (isSuperAdmin || role === 'Admin')) {
+    } else if (page === 'companies' && can('company.manage')) {
         content = <Companies />;
     } else if (page === 'access-matrix' && isCRO) {
-        // Retired for Admin/Super Admin as of Phase B (Section 3.8) — they now
-        // use the live Roles & Permissions screen instead. Left in place for
-        // CRO/Consultant CRO, who still use it as a read reference and were
-        // never in scope for the new (Admin-only) screen.
+        // No corresponding capability exists in the taxonomy (it's a static,
+        // hand-typed reference page with no backend route at all) — kept on
+        // the old isCRO literal, unchanged, matching Layout.jsx's own
+        // documented exception for this same item.
         content = <AccessMatrix />;
 
     // ── Admin + ops shared pages ──────────────────────────────────────────────
-    } else if (page === 'scoring-methodology' && (isSuperAdmin || role === 'Admin' || isOp || role === 'Risk Champion' || role === 'Viewer')) {
+    } else if (page === 'scoring-methodology' && can('scoring_methodology.view')) {
         content = <ScoringMethodology />;
-    } else if (page === 'audit') {
+    } else if (page === 'audit' && can('audit_log.view')) {
+        // audit_log.view is a non-configurable safety baseline (always
+        // 'full' for every role) — this page previously had no gate at all,
+        // so adding this check is a zero-behavior-change formalization, not
+        // a restriction.
         content = <AuditLog />;
-    } else if (page === 'data-tools' && (isSuperAdmin || role === 'Admin' || isOp || role === 'Risk Champion')) {
-        // Risk Champion added as part of the Phase D Layout.jsx cutover
-        // (2026-07-23) -- the backing backend routes (/api/import/:module,
-        // /api/export/:module) already grant Risk Champion full access via
-        // their literal requireRole() list, confirmed by reading the live
-        // routes, but this page gate and the old Import/Export nav item
-        // both excluded them, so there was no way to reach a feature they
-        // already had real rights to. See Layout.jsx's NAV_ITEMS header
-        // comment for the full cross-check.
+    } else if (page === 'data-tools' && can('data.export')) {
+        // Decided 2026-07-23: gate tightened to exclude Risk Owner, who the
+        // old isOp-based gate let through despite data.export/data.import
+        // never having granted them real backend access (their import/export
+        // calls already 403'd) — this page was silently broken for them
+        // before. data.export and data.import share an identical seeded role
+        // list, so checking either is equivalent.
         content = <DataTools />;
 
     // ── Always accessible ─────────────────────────────────────────────────────
@@ -178,46 +193,55 @@ export default function App() {
     } else if (page === 'glossary') {
         content = <Glossary />;
 
-    // ── Operational pages (Admin has full access for demo) ───────────────────
-    } else if (page === 'my-tasks' && (role === 'Admin' || isOp || role === 'Risk Champion')) {
+    // ── Operational pages ───────────────────────────────────────────────────
+    } else if (page === 'my-tasks' && can('tasks.my_tasks.view')) {
         content = <MyTasks />;
-    } else if (page === 'management-summary' && (role === 'Admin' || isOp || role === 'Risk Champion' || role === 'Viewer')) {
+    } else if (page === 'management-summary' && can('dashboard.management_summary.view')) {
         content = <ManagementSummary />;
-    } else if (page === 'policies' && true) {
+    } else if (page === 'policies' && can('policy.view')) {
         content = <PolicyRepository />;
-    } else if (page === 'risks' && (role === 'Admin' || isOp || role === 'Risk Champion' || role === 'Viewer')) {
+    } else if (page === 'risks' && can('risk.view')) {
         content = <RiskRegister
             fromIncidentId={fromIncidentId}
             onIncidentLinked={() => { setFromIncidentId(null); setPage('incident-log'); }}
         />;
     } else if (page === 'critical-risks') {
+        // No corresponding capability exists in the taxonomy — this page has
+        // never had a gate, unchanged, matching Layout.jsx's own documented
+        // exception for this same item.
         content = <CriticalRisksLog />;
-    } else if (page === 'controls' && (role === 'Admin' || isOp || role === 'Risk Champion' || role === 'Viewer')) {
+    } else if (page === 'controls' && can('control.view')) {
         content = <ControlLibrary />;
-    } else if (page === 'kris' && (role === 'Admin' || isOp || role === 'Risk Champion' || role === 'Viewer')) {
+    } else if (page === 'kris' && can('kri.view')) {
         content = <KriLibrary />;
-    } else if (page === 'kri-register' && (role === 'Admin' || isOp || role === 'Risk Champion' || role === 'Viewer')) {
+    } else if (page === 'kri-register' && can('kri.view')) {
         content = <KriRegister />;
-    } else if (page === 'issues' && (role === 'Admin' || isOp || role === 'Risk Champion' || role === 'Viewer')) {
+    } else if (page === 'issues' && can('issue.view')) {
         content = <IssuesTracker onNavigate={setPage} />;
-    } else if (page === 'horizon-scanning') {
+    } else if (page === 'horizon-scanning' && can('horizon.view')) {
+        // Decided 2026-07-23 (settled after two rounds of correction):
+        // Super Admin, CRO, and Consultant CRO retain access; Admin, Risk
+        // Manager, Risk Champion, and Risk Owner do not. This page
+        // previously had no gate at all; fix-horizon-permissions.js
+        // corrects the underlying role_permissions seed to match, and this
+        // check now enforces it. See CLAUDE.md for the full decision record.
         content = <HorizonScanning />;
-    } else if (page === 'risk-gov-docs' && (isSuperAdmin || role === 'Admin' || role === 'CRO' || role === 'Consultant CRO' || role === 'Risk Manager')) {
+    } else if (page === 'risk-gov-docs' && can('risk_gov_docs.view')) {
         content = <RiskGovDocs />;
-    } else if (page === 'forms-templates' && (isSuperAdmin || role === 'Admin' || role === 'CRO' || role === 'Consultant CRO')) {
+    } else if (page === 'forms-templates' && can('forms.accepted_risk_report')) {
         content = <FormsTemplates />;
-    } else if (page === 'risk-appetite') {
+    } else if (page === 'risk-appetite' && can('risk_appetite.view')) {
         content = <RiskAppetite />;
-    } else if (page === 'incident-log' && (role === 'Admin' || isOp || role === 'Risk Champion' || role === 'Viewer')) {
+    } else if (page === 'incident-log' && can('incident.view')) {
         content = <IncidentLog
             onNavigate={setPage}
             onCreateRisk={(incId) => { setFromIncidentId(incId); setPage('risks'); }}
         />;
-    } else if (page === 'obligations' && (role === 'Admin' || isOp || role === 'Risk Champion' || role === 'Viewer')) {
+    } else if (page === 'obligations' && can('obligation.view')) {
         content = <ComplianceObligations />;
-    } else if (page === 'calendar' && (role === 'Admin' || isOp || role === 'Risk Champion' || role === 'Viewer')) {
+    } else if (page === 'calendar' && can('calendar.view')) {
         content = <ComplianceCalendar />;
-    } else if (page === 'org-roles' && (role === 'Admin' || isOp || role === 'Risk Champion' || role === 'Viewer')) {
+    } else if (page === 'org-roles' && can('org_roles.view')) {
         content = <OrgRoles />;
 
     // ── Fallbacks ─────────────────────────────────────────────────────────────
