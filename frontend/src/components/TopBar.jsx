@@ -1,11 +1,16 @@
 // TopBar.jsx — global search + notification bell, shown in Layout's shell.
-// `canSearch` (below) includes Risk Owner — but the backend's
-// GET /api/search route excludes Risk Owner (docs/API_REFERENCE.md
-// "Import / Export / Search"), so a Risk Owner sees a working-looking
-// search box that 403s. Confirmed still true as of 2026-07-21; see
-// Documents/Internal/RBAC_Permissions_Engine_Scoping.docx Finding 3.
+// `canSearch` (below) used to be a role literal that already included Risk
+// Owner, but the backend's GET /api/search route excluded Risk Owner --
+// Finding 3 from the RBAC audit, a working-looking search box that 403'd.
+// Phase C's gap fix (2026-07-23) cut /api/search over to can('search.global'),
+// and this file was cut over the same day to usePermission('search.global'),
+// which also fixes a second gap the role-literal check had: it never
+// included Super Admin. Both fixes land together so the frontend and
+// backend agree from the same deploy. See
+// Documents/Internal/RBAC_Permissions_Engine_Scoping.docx Finding 3 and
+// section 3.6.
 import { useEffect, useRef, useState } from 'react';
-import { useAuth } from '../AuthContext';
+import { useAuth, usePermission } from '../AuthContext';
 import { useT } from '../contexts/LanguageContext';
 
 const NOTIFICATION_PAGE = {
@@ -28,7 +33,7 @@ const RESULT_GROUP_KEYS = [
 // H8: global search bar across Risks, Controls, KRIs, Obligations,
 // Issues, and Policies; G5: in-app notifications driven by the
 // configurable escalation rules.
-export default function TopBar({ onNavigate, role }) {
+export default function TopBar({ onNavigate }) {
     const t = useT();
     const { api } = useAuth();
     const [query, setQuery] = useState('');
@@ -40,7 +45,7 @@ export default function TopBar({ onNavigate, role }) {
     const searchBoxRef = useRef(null);
     const notifBoxRef = useRef(null);
 
-    const canSearch = role === 'Admin' || role === 'Risk Manager' || role === 'Risk Champion' || role === 'CRO' || role === 'Consultant CRO' || role === 'Risk Owner';
+    const canSearch = usePermission('search.global') !== 'none';
 
     useEffect(() => {
         if (!canSearch) return;

@@ -8077,7 +8077,14 @@ const IMPORT_SPECS = {
 
 app.get(
     '/api/import/:module/template',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'CRO'),
+    // Phase C gap fix (2026-07-23) -- this whole module (import/export/
+    // search/seed-controls) was missed by all 10 of Phase C's original
+    // batches, discovered while wiring Phase D's DataTools.jsx/TopBar.jsx
+    // component gates to it. requireRole('Admin', 'Risk Manager', 'Risk
+    // Champion', 'CRO') auto-expanded to Consultant CRO and bypassed for
+    // Super Admin -- exactly matching data.import's seeded role list, so
+    // this is a zero-behavior-change mechanical cutover.
+    can('data.import'),
     (req, res) => {
         const spec = IMPORT_SPECS[req.params.module];
         if (!spec) return res.status(404).json({ error: 'Unknown import module' });
@@ -8331,7 +8338,7 @@ const IMPORT_ROW_HANDLERS = {
 
 app.post(
     '/api/import/:module',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'CRO'),
+    can('data.import'),
     asyncHandler(async (req, res) => {
         const handler = IMPORT_ROW_HANDLERS[req.params.module];
         if (!handler) return res.status(404).json({ error: 'Unknown import module' });
@@ -8422,7 +8429,11 @@ function _jaccard(a, b) {
 // GET /api/seed-controls — return the full approved seed list.
 app.get(
     '/api/seed-controls',
-    requireRole('Admin'),
+    // Phase C gap fix (2026-07-23) -- same missed-module cutover as the
+    // import/export/search routes above. requireRole('Admin') bypasses for
+    // Super Admin too, exactly matching data.seed_controls's seed
+    // (Admin/Super Admin only) -- zero-behavior-change.
+    can('data.seed_controls'),
     asyncHandler(async (_req, res) => {
         res.json({ controls: SEED_CONTROLS });
     })
@@ -8434,7 +8445,7 @@ app.get(
 // Threshold: 0.40 — surfaces probable duplicates without flooding with false positives.
 app.post(
     '/api/seed-controls/preview',
-    requireRole('Admin'),
+    can('data.seed_controls'),
     asyncHandler(async (req, res) => {
         const { csv } = req.body;
         if (!csv) return res.json({ clientControls: [], matches: [] });
@@ -8474,7 +8485,7 @@ app.post(
 // action='skip'  → do NOT seed; corresponding client control is imported normally.
 app.post(
     '/api/seed-controls/apply',
-    requireRole('Admin'),
+    can('data.seed_controls'),
     asyncHandler(async (req, res) => {
         const { departmentMap = {}, decisions = [], csv } = req.body;
         if (!Array.isArray(decisions)) return res.status(400).json({ error: 'decisions must be an array' });
@@ -8655,7 +8666,7 @@ const EXPORT_SPECS = {
 
 app.get(
     '/api/export/:module',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'CRO'),
+    can('data.export'),
     asyncHandler(async (req, res) => {
         const spec = EXPORT_SPECS[req.params.module];
         if (!spec) return res.status(404).json({ error: 'Unknown export module' });
@@ -8678,7 +8689,22 @@ app.get(
 
 app.get(
     '/api/search',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'CRO'),
+    // Phase C gap fix (2026-07-23): this route was requireRole('Admin',
+    // 'Risk Manager', 'Risk Champion', 'CRO'), which excluded Risk Owner --
+    // exactly Finding 3 from the RBAC audit, and TopBar.jsx's canSearch
+    // flag already included Risk Owner, so this was a working-looking
+    // search box that 403'd for them. Decision 2 (2026-07-22) already
+    // resolved this ("search.global becomes scope-aware: Risk Champion/
+    // Risk Owner: own, Risk Manager: dept, CRO/Admin: full") but it was
+    // never implemented in code until now. Note the per-module filtering
+    // below (managerScopeClause) doesn't actually distinguish own from
+    // dept -- it department-scopes Risk Champion, Risk Owner, and Risk
+    // Manager identically via DEPT_SCOPED_ROLES, the same coarser
+    // convention already used everywhere else search touches. Risk Owner
+    // now gets exactly the same department-scoped results Risk Champion
+    // already got through this mechanism -- no query changes needed, and
+    // no narrower "own" (identity-only) filtering was added or promised.
+    can('search.global'),
     asyncHandler(async (req, res) => {
         const q = (req.query.q || '').trim();
         if (q.length < 2) return res.json({ results: [] });

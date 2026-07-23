@@ -1,8 +1,14 @@
 // Glossary.jsx — Glossary page. Viewing is open to everyone; `isAdmin`
-// (below) gates adding/editing/deleting custom terms to Admin only. See
+// (below) gates adding/editing/deleting custom terms. Phase D batch 3
+// (2026-07-23): cut over from a literal role === 'Admin' check (a real
+// gap -- glossary.manage is seeded full for Super Admin too, and the
+// backend POST/DELETE /api/glossary routes have accepted Super Admin via
+// requireRole()'s bypass since Phase C batch 1, so Super Admin could
+// already manage terms via the API but saw no buttons for it) to
+// usePermission('glossary.manage'). See
 // Documents/Internal/RBAC_Permissions_Engine_Scoping.docx section 3.6.
 import { useEffect, useState } from 'react';
-import { useAuth } from '../AuthContext';
+import { useAuth, usePermission } from '../AuthContext';
 import { useT } from '../contexts/LanguageContext';
 
 const BUILT_IN_TERMS = [
@@ -32,11 +38,9 @@ const BUILT_IN_TERMS = [
 ];
 
 export default function Glossary() {
-    const { api, session } = useAuth();
+    const { api } = useAuth();
     const t = useT();
-    const activeCompany = session.companies.find((c) => c.id === session.activeCompanyId);
-    const role = activeCompany?.role;
-    const isAdmin = role === 'Admin';
+    const isAdmin = usePermission('glossary.manage') !== 'none';
 
     const [customTerms, setCustomTerms] = useState([]);
     const [loading, setLoading]         = useState(true);

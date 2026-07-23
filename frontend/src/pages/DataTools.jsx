@@ -1,10 +1,15 @@
 // DataTools.jsx — Import / Export / Search page. The Seed Controls wizard
-// (below) is Admin-only. Import/export themselves are gated per-module by
-// the backend (Admin, Risk Manager, Risk Champion, CRO — see
-// docs/API_REFERENCE.md "Import / Export / Search"). See
-// Documents/Internal/RBAC_Permissions_Engine_Scoping.docx section 3.6.
+// (below) is gated on data.seed_controls. Phase D batch 3 (2026-07-23): cut
+// over from a literal role === 'Admin' check (a real gap -- data.seed_controls
+// is seeded full for Super Admin too) to usePermission('data.seed_controls').
+// Import/export themselves are gated per-module by the backend (Admin, Super
+// Admin, Risk Manager, Risk Champion, CRO, Consultant CRO -- can('data.import')/
+// can('data.export'), cut over from requireRole() the same day as part of the
+// same Phase C gap-fix pass -- see docs/API_REFERENCE.md "Import / Export /
+// Search"). See Documents/Internal/RBAC_Permissions_Engine_Scoping.docx
+// section 3.6.
 import { useState } from 'react';
-import { useAuth } from '../AuthContext';
+import { useAuth, usePermission } from '../AuthContext';
 import { useT } from '../contexts/LanguageContext';
 import readXlsxFile from 'read-excel-file';
 import SeedControlsWizard from '../components/SeedControlsWizard';
@@ -900,9 +905,9 @@ function StepDone({ importResult, onReset }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function DataTools() {
-    const { api, session } = useAuth();
+    const { api } = useAuth();
     const t = useT();
-    const role = session?.companies?.find(c => c.id === session.activeCompanyId)?.role;
+    const canSeedControls = usePermission('data.seed_controls') !== 'none';
 
     // Import wizard state
     const [step, setStep] = useState('upload');
@@ -1005,7 +1010,7 @@ export default function DataTools() {
             <p className="page-subtitle">{t('data_tools_subtitle')}</p>
 
             {/* Standard Controls Seeding */}
-            {role === 'Admin' && (
+            {canSeedControls && (
                 <div className="card" style={{ marginBottom: 24, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
                     <div>
                         <h3 style={{ margin: 0, marginBottom: 4 }}>{t('data_tools_std_controls')}</h3>

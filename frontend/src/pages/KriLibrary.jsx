@@ -1,10 +1,16 @@
 // KriLibrary.jsx — KRI Library & Register (B3) page. `canManageKri`
-// (below) gates defining a KRI and recording measurements: Admin, Risk
-// Manager, CRO, Consultant CRO. Viewing (incl. Risk Champion/Owner/
-// Viewer) is broader. See
-// Documents/Internal/RBAC_Permissions_Engine_Scoping.docx section 3.6.
+// (below) gates defining a KRI and recording measurements. Phase D batch 3
+// (2026-07-23): cut over from a role literal (Admin, Risk Manager, CRO,
+// Consultant CRO -- missing Super Admin, a real gap since kri.manage_definition
+// and kri.record_measurement are both seeded full for Super Admin too, so
+// Super Admin could already do this via the API but saw no buttons for it)
+// to usePermission('kri.manage_definition'). kri.record_measurement shares
+// an identical seeded role list, so one capability check covers both
+// actions. Viewing (incl. Risk Champion/Owner/Viewer) is broader and
+// unaffected. See Documents/Internal/RBAC_Permissions_Engine_Scoping.docx
+// section 3.6.
 import { useEffect, useState, useCallback } from 'react';
-import { useAuth } from '../AuthContext';
+import { useAuth, usePermission } from '../AuthContext';
 import DepartmentField from '../components/DepartmentField';
 import Sparkline, { bandBadgeClass } from '../components/Sparkline';
 import { useT } from '../contexts/LanguageContext';
@@ -123,9 +129,8 @@ export default function KriLibrary() {
     const { api, user, session } = useAuth();
     const t = useT();
     const activeCompany = session.companies.find((c) => c.id === session.activeCompanyId);
-    const role = activeCompany?.role || 'Viewer';
     const isBuMode = !!activeCompany?.has_business_units;
-    const canManageKri = role === 'Admin' || role === 'Risk Manager' || role === 'CRO' || role === 'Consultant CRO';
+    const canManageKri = usePermission('kri.manage_definition') !== 'none';
     const [kris, setKris] = useState([]);
     const [allDepartments, setAllDepartments] = useState([]);
     const [allBus, setAllBus] = useState([]);

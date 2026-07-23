@@ -447,7 +447,7 @@ export default function Layout({ page, onNavigate, children, groupView }) {
             <main
                 className={`main-content${page === 'about' ? ' main-content--centered' : ''}`}
             >
-                {page !== 'about' && <TopBar onNavigate={onNavigate} role={role} />}
+                {page !== 'about' && <TopBar onNavigate={onNavigate} />}
                 {children}
             </main>
 
