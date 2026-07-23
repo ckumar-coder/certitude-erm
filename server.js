@@ -10907,15 +10907,17 @@ ${combinedContent}`;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FORMS & TEMPLATES
-// Access: CRO, Consultant CRO, Admin, Super Admin
+// Access: Admin, Super Admin, CRO, Consultant CRO (no Risk Manager) --
+// gated via can('forms.accepted_risk_report') as of the Phase C cutover
+// (2026-07-22). The old FORMS_ROLES array is gone -- no remaining call site.
 // ─────────────────────────────────────────────────────────────────────────────
-
-const FORMS_ROLES = ['Admin', 'Super Admin', 'CRO', 'Consultant CRO'];
 
 // GET /api/forms/accepted-risks?from=YYYY-MM-DD&to=YYYY-MM-DD
 // Returns the latest version of every risk accepted (cro_acceptance_status='accepted')
 // with cro_actioned_at falling within the requested date range.
-app.get('/api/forms/accepted-risks', requireRole(...FORMS_ROLES), asyncHandler(async (req, res) => {
+app.get('/api/forms/accepted-risks',
+    can('forms.accepted_risk_report'), // Phase C cutover -- was requireRole(...FORMS_ROLES) = ['Admin', 'Super Admin', 'CRO', 'Consultant CRO']; exact match, no Risk Manager
+    asyncHandler(async (req, res) => {
     const { from, to } = req.query;
     if (!from || !to) return res.status(400).json({ error: 'from and to query params are required (YYYY-MM-DD)' });
 
@@ -10951,12 +10953,15 @@ app.get('/api/forms/accepted-risks', requireRole(...FORMS_ROLES), asyncHandler(a
 // Storage — migrated off GCS specifically to remove an external storage
 // dependency ahead of a possible on-premises handover (see
 // docs/SCOPE_NOTES.md section 14).
+// Access: Admin, Super Admin, CRO, Consultant CRO, Risk Manager -- gated via
+// can('risk_gov_docs.view'/'risk_gov_docs.manage') as of the Phase C cutover
+// (2026-07-22). The old RGD_ROLES array is gone -- no remaining call site.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const RGD_ROLES = ['Admin', 'Super Admin', 'CRO', 'Consultant CRO', 'Risk Manager'];
-
 // GET /api/risk-gov/categories
-app.get('/api/risk-gov/categories', requireRole(...RGD_ROLES), asyncHandler(async (req, res) => {
+app.get('/api/risk-gov/categories',
+    can('risk_gov_docs.view'), // Phase C cutover -- was requireRole(...RGD_ROLES); exact match
+    asyncHandler(async (req, res) => {
     const rows = await pool.query(
         `SELECT id, code, name, display_order,
                 (SELECT COUNT(*) FROM risk_gov_documents d WHERE d.category_id = rgc.id AND d.is_latest = true) AS doc_count
@@ -10969,7 +10974,9 @@ app.get('/api/risk-gov/categories', requireRole(...RGD_ROLES), asyncHandler(asyn
 }));
 
 // POST /api/risk-gov/categories
-app.post('/api/risk-gov/categories', requireRole(...RGD_ROLES), asyncHandler(async (req, res) => {
+app.post('/api/risk-gov/categories',
+    can('risk_gov_docs.manage'), // Phase C cutover -- was requireRole(...RGD_ROLES); exact match
+    asyncHandler(async (req, res) => {
     const { code, name } = req.body;
     if (!code || !name) return res.status(400).json({ error: 'code and name are required' });
     const safeCode = code.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10);
@@ -10987,7 +10994,9 @@ app.post('/api/risk-gov/categories', requireRole(...RGD_ROLES), asyncHandler(asy
 }));
 
 // DELETE /api/risk-gov/categories/:id
-app.delete('/api/risk-gov/categories/:id', requireRole(...RGD_ROLES), asyncHandler(async (req, res) => {
+app.delete('/api/risk-gov/categories/:id',
+    can('risk_gov_docs.manage'), // Phase C cutover -- was requireRole(...RGD_ROLES); exact match
+    asyncHandler(async (req, res) => {
     const catId = parseInt(req.params.id, 10);
     const cat = await pool.query(
         'SELECT id FROM risk_gov_categories WHERE id = $1 AND company_id = $2',
@@ -11006,7 +11015,9 @@ app.delete('/api/risk-gov/categories/:id', requireRole(...RGD_ROLES), asyncHandl
 }));
 
 // GET /api/risk-gov/documents  — latest versions only by default; ?all=1 returns all versions
-app.get('/api/risk-gov/documents', requireRole(...RGD_ROLES), asyncHandler(async (req, res) => {
+app.get('/api/risk-gov/documents',
+    can('risk_gov_docs.view'), // Phase C cutover -- was requireRole(...RGD_ROLES); exact match
+    asyncHandler(async (req, res) => {
     const all = req.query.all === '1';
     const rows = await pool.query(
         `SELECT d.id, d.doc_id, d.version, d.title, d.description,
@@ -11030,7 +11041,9 @@ const RGD_MAX_BYTES   = 10 * 1024 * 1024;  // 10MB per-file limit
 const RGD_QUOTA_BYTES = 500 * 1024 * 1024; // 500MB per-company quota
 
 // POST /api/risk-gov/documents — create a new document (body includes file_data, base64)
-app.post('/api/risk-gov/documents', requireRole(...RGD_ROLES), asyncHandler(async (req, res) => {
+app.post('/api/risk-gov/documents',
+    can('risk_gov_docs.manage'), // Phase C cutover -- was requireRole(...RGD_ROLES); exact match
+    asyncHandler(async (req, res) => {
     const { category_id, title, description, file_name, mime_type, file_data } = req.body;
     if (!category_id || !title || !file_name || !file_data) {
         return res.status(400).json({ error: 'category_id, title, file_name, and file_data are required' });
@@ -11077,7 +11090,9 @@ app.post('/api/risk-gov/documents', requireRole(...RGD_ROLES), asyncHandler(asyn
 }));
 
 // POST /api/risk-gov/documents/:id/version — upload a new version of an existing document
-app.post('/api/risk-gov/documents/:id/version', requireRole(...RGD_ROLES), asyncHandler(async (req, res) => {
+app.post('/api/risk-gov/documents/:id/version',
+    can('risk_gov_docs.manage'), // Phase C cutover -- was requireRole(...RGD_ROLES); exact match
+    asyncHandler(async (req, res) => {
     const docDbId = parseInt(req.params.id, 10);
     const { file_name, mime_type, file_data, description } = req.body;
     if (!file_name || !file_data) return res.status(400).json({ error: 'file_name and file_data are required' });
@@ -11121,7 +11136,9 @@ app.post('/api/risk-gov/documents/:id/version', requireRole(...RGD_ROLES), async
 }));
 
 // GET /api/risk-gov/documents/:id/download — streams the file directly from Postgres
-app.get('/api/risk-gov/documents/:id/download', requireRole(...RGD_ROLES), asyncHandler(async (req, res) => {
+app.get('/api/risk-gov/documents/:id/download',
+    can('risk_gov_docs.view'), // Phase C cutover -- was requireRole(...RGD_ROLES); exact match
+    asyncHandler(async (req, res) => {
     const r = await pool.query(
         'SELECT file_name, mime_type, file_data FROM risk_gov_documents WHERE id = $1 AND company_id = $2',
         [parseInt(req.params.id, 10), req.company.id]
@@ -11136,7 +11153,9 @@ app.get('/api/risk-gov/documents/:id/download', requireRole(...RGD_ROLES), async
 }));
 
 // GET /api/risk-gov/documents/:id/versions — all versions of a document
-app.get('/api/risk-gov/documents/:id/versions', requireRole(...RGD_ROLES), asyncHandler(async (req, res) => {
+app.get('/api/risk-gov/documents/:id/versions',
+    can('risk_gov_docs.view'), // Phase C cutover -- was requireRole(...RGD_ROLES); exact match
+    asyncHandler(async (req, res) => {
     const doc = await pool.query(
         'SELECT doc_id FROM risk_gov_documents WHERE id = $1 AND company_id = $2',
         [parseInt(req.params.id, 10), req.company.id]
@@ -11155,7 +11174,9 @@ app.get('/api/risk-gov/documents/:id/versions', requireRole(...RGD_ROLES), async
 }));
 
 // DELETE /api/risk-gov/documents/:id — delete all versions of a document
-app.delete('/api/risk-gov/documents/:id', requireRole(...RGD_ROLES), asyncHandler(async (req, res) => {
+app.delete('/api/risk-gov/documents/:id',
+    can('risk_gov_docs.manage'), // Phase C cutover -- was requireRole(...RGD_ROLES); exact match
+    asyncHandler(async (req, res) => {
     const docDbId = parseInt(req.params.id, 10);
     const doc = await pool.query(
         'SELECT doc_id FROM risk_gov_documents WHERE id = $1 AND company_id = $2',
