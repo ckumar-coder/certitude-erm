@@ -1856,7 +1856,7 @@ app.get(
     authenticate,
     requirePasswordCurrent,
     requireCompany,
-    requireRole('Admin'),
+    can('email_settings.manage'), // Phase C batch 12 -- was requireRole('Admin'); exact match to the seed (Admin/Super Admin only)
     asyncHandler(async (req, res) => {
         const { rows } = await pool.query(
             'SELECT * FROM company_email_settings WHERE company_id = $1',
@@ -1875,7 +1875,7 @@ app.put(
     authenticate,
     requirePasswordCurrent,
     requireCompany,
-    requireRole('Admin'),
+    can('email_settings.manage'), // Phase C batch 12 -- was requireRole('Admin'); exact match to the seed (Admin/Super Admin only)
     asyncHandler(async (req, res) => {
         const { inherit_from_parent, smtp_host, smtp_port, smtp_secure, smtp_user, smtp_password, from_name, from_email, reply_to } = req.body;
 
@@ -1923,7 +1923,7 @@ app.post(
     authenticate,
     requirePasswordCurrent,
     requireCompany,
-    requireRole('Admin'),
+    can('email_settings.manage'), // Phase C batch 12 -- was requireRole('Admin'); exact match to the seed (Admin/Super Admin only)
     asyncHandler(async (req, res) => {
         try {
             await sendTestEmail(req.company.id, req.user.email);
@@ -2039,8 +2039,13 @@ app.get('/api/risk-taxonomy', asyncHandler(async (req, res) => {
     res.json(cats.rows.map((c) => ({ id: c.id, name: c.name, sub_categories: subMap[c.id] || [] })));
 }));
 
-// POST /api/risk-categories — add a category (Admin only)
-app.post('/api/risk-categories', requireRole('Admin'), asyncHandler(async (req, res) => {
+// POST /api/risk-categories — add a category
+// Phase C batch 12 (2026-07-23) -- was requireRole('Admin'); exact match to
+// risk_config.manage's seed (Admin/Super Admin only at the time), then
+// widened alongside the taxonomies route below per Chandrashekar's decision
+// to also include CRO/Consultant CRO/Risk Manager -- see the module header
+// comment further up this file for the full rationale.
+app.post('/api/risk-categories', can('risk_config.manage'), asyncHandler(async (req, res) => {
     const name = (req.body.name || '').trim();
     if (!name) return res.status(400).json({ error: 'Category name is required' });
     try {
@@ -2056,8 +2061,8 @@ app.post('/api/risk-categories', requireRole('Admin'), asyncHandler(async (req, 
     res.status(201).json({ ok: true });
 }));
 
-// PUT /api/risk-categories/:id — rename a category (Admin only)
-app.put('/api/risk-categories/:id', requireRole('Admin'), asyncHandler(async (req, res) => {
+// PUT /api/risk-categories/:id — rename a category
+app.put('/api/risk-categories/:id', can('risk_config.manage'), asyncHandler(async (req, res) => { // Phase C batch 12 -- was requireRole('Admin')
     const name = (req.body.name || '').trim();
     if (!name) return res.status(400).json({ error: 'Category name is required' });
     const r = await pool.query(
@@ -2068,8 +2073,8 @@ app.put('/api/risk-categories/:id', requireRole('Admin'), asyncHandler(async (re
     res.json({ ok: true });
 }));
 
-// DELETE /api/risk-categories/:id — delete a category (Admin only, blocked if in use)
-app.delete('/api/risk-categories/:id', requireRole('Admin'), asyncHandler(async (req, res) => {
+// DELETE /api/risk-categories/:id — delete a category (blocked if in use)
+app.delete('/api/risk-categories/:id', can('risk_config.manage'), asyncHandler(async (req, res) => { // Phase C batch 12 -- was requireRole('Admin')
     // Check for category in use on any risk
     const catRow = await pool.query(
         `SELECT name FROM risk_categories WHERE id = $1 AND company_id = $2`,
@@ -2106,8 +2111,8 @@ app.delete('/api/risk-categories/:id', requireRole('Admin'), asyncHandler(async 
     res.json({ ok: true });
 }));
 
-// POST /api/risk-sub-categories — add a sub-category (Admin only)
-app.post('/api/risk-sub-categories', requireRole('Admin'), asyncHandler(async (req, res) => {
+// POST /api/risk-sub-categories — add a sub-category
+app.post('/api/risk-sub-categories', can('risk_config.manage'), asyncHandler(async (req, res) => { // Phase C batch 12 -- was requireRole('Admin')
     const { category_id, name } = req.body;
     if (!category_id || !name?.trim()) return res.status(400).json({ error: 'category_id and name are required' });
     // Ensure the category belongs to this company
@@ -2129,8 +2134,8 @@ app.post('/api/risk-sub-categories', requireRole('Admin'), asyncHandler(async (r
     res.status(201).json({ ok: true });
 }));
 
-// PUT /api/risk-sub-categories/:id — rename a sub-category (Admin only)
-app.put('/api/risk-sub-categories/:id', requireRole('Admin'), asyncHandler(async (req, res) => {
+// PUT /api/risk-sub-categories/:id — rename a sub-category
+app.put('/api/risk-sub-categories/:id', can('risk_config.manage'), asyncHandler(async (req, res) => { // Phase C batch 12 -- was requireRole('Admin')
     const name = (req.body.name || '').trim();
     if (!name) return res.status(400).json({ error: 'Name is required' });
     const r = await pool.query(
@@ -2144,8 +2149,8 @@ app.put('/api/risk-sub-categories/:id', requireRole('Admin'), asyncHandler(async
     res.json({ ok: true });
 }));
 
-// DELETE /api/risk-sub-categories/:id — delete a sub-category (Admin only, blocked if in use)
-app.delete('/api/risk-sub-categories/:id', requireRole('Admin'), asyncHandler(async (req, res) => {
+// DELETE /api/risk-sub-categories/:id — delete a sub-category (blocked if in use)
+app.delete('/api/risk-sub-categories/:id', can('risk_config.manage'), asyncHandler(async (req, res) => { // Phase C batch 12 -- was requireRole('Admin')
     // Verify ownership and get name for in-use check
     const subRow = await pool.query(
         `SELECT s.name FROM risk_sub_categories s
@@ -2203,7 +2208,19 @@ app.get(
 
 app.post(
     '/api/taxonomies/:type',
-    requireRole('Admin', 'Risk Manager', 'Risk Champion', 'CRO'),
+    // Phase C batch 12 (2026-07-23) -- was requireRole('Admin', 'Risk
+    // Manager', 'Risk Champion', 'CRO'), which is broader than
+    // risk_config.manage's original Admin/Super-Admin-only seed. Put to
+    // Chandrashekar directly rather than guessed at: decided to widen the
+    // seed to Admin/Super Admin/CRO/Consultant CRO/Risk Manager (a live
+    // data change via fix-risk-config-permissions.js, run once against
+    // qpost-db) rather than narrow the route -- Risk Champion is the one
+    // role that loses access it has today, a deliberate, confirmed choice.
+    // Since risk_config.manage is a single capability shared with Risk
+    // Categories/Sub-Categories CRUD and the "Risk Configuration" nav page,
+    // widening it here also grants those roles that page and CRUD access,
+    // confirmed acceptable before implementing.
+    can('risk_config.manage'),
     asyncHandler(async (req, res) => {
         if (!TAXONOMY_TYPES.includes(req.params.type)) return res.status(404).json({ error: 'Unknown taxonomy type' });
         const name = (req.body.name || '').trim();
@@ -2226,7 +2243,7 @@ app.post(
 
 app.delete(
     '/api/taxonomies/:type',
-    requireRole('Admin'),
+    can('risk_config.manage'), // Phase C batch 12 -- was requireRole('Admin'); exact match to the seed at the time, now covers the widened set alongside the POST route above
     asyncHandler(async (req, res) => {
         if (!TAXONOMY_TYPES.includes(req.params.type)) return res.status(404).json({ error: 'Unknown taxonomy type' });
         await pool.query('DELETE FROM risk_taxonomy_terms WHERE company_id = $1 AND term_type = $2 AND name = $3', [
@@ -2255,6 +2272,14 @@ app.get(
 
 app.post(
     '/api/matrix/config',
+    // Left on requireRole('Admin') deliberately -- flagged during Phase C
+    // batch 9 as "closer to Users & Company Admin module" than Risk
+    // Appetite/Scoring, and re-checked during Phase C batch 12 (the actual
+    // Users & Company Admin migration): no capability in the Section 7
+    // taxonomy represents heatmap-dimensions/fiscal-year settings
+    // specifically, so there's nothing to map this to yet. Not a
+    // risk_config.manage fit either -- that capability's seed/label is
+    // about risk categories and taxonomy terms, not matrix dimensions.
     requireRole('Admin'),
     asyncHandler(async (req, res) => {
         const current = await pool.query(
@@ -2311,7 +2336,7 @@ app.get(
 
 app.patch(
     '/api/companies/current/branding',
-    requireRole('Admin'),
+    can('branding.manage'), // Phase C batch 12 -- was requireRole('Admin'); exact match to the seed (Admin/Super Admin only)
     asyncHandler(async (req, res) => {
         const { branding_logo_url, branding_primary_color } = req.body;
 
@@ -2369,7 +2394,7 @@ app.get(
 
 app.post(
     '/api/departments',
-    requireRole('Admin'),
+    can('departments.manage'), // Phase C batch 12 -- was requireRole('Admin'); exact match to the seed (Admin/Super Admin only)
     asyncHandler(async (req, res) => {
         const { name, code, business_unit_id, parent_dept_id } = req.body;
         if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
@@ -2394,7 +2419,7 @@ app.post(
 
 app.patch(
     '/api/departments/:id',
-    requireRole('Admin'),
+    can('departments.manage'), // Phase C batch 12 -- was requireRole('Admin'); exact match to the seed (Admin/Super Admin only)
     asyncHandler(async (req, res) => {
         const { name, business_unit_id, parent_dept_id } = req.body;
         const sets = [];
@@ -2422,7 +2447,7 @@ app.patch(
 
 app.delete(
     '/api/departments/:id',
-    requireRole('Admin'),
+    can('departments.manage'), // Phase C batch 12 -- was requireRole('Admin'); exact match to the seed (Admin/Super Admin only)
     asyncHandler(async (req, res) => {
         // Check if the department is referenced by any active risks, users, or controls.
         const code = (await pool.query(
@@ -2470,7 +2495,7 @@ app.get(
 
 app.post(
     '/api/business-units',
-    requireRole('Admin'),
+    can('business_units.manage'), // Phase C batch 12 -- was requireRole('Admin'); exact match to the seed (Admin/Super Admin only)
     asyncHandler(async (req, res) => {
         const { name, code } = req.body;
         if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
@@ -2492,7 +2517,7 @@ app.post(
 
 app.patch(
     '/api/business-units/:id',
-    requireRole('Admin'),
+    can('business_units.manage'), // Phase C batch 12 -- was requireRole('Admin'); exact match to the seed (Admin/Super Admin only)
     asyncHandler(async (req, res) => {
         const { name } = req.body;
         if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
@@ -2507,7 +2532,7 @@ app.patch(
 
 app.delete(
     '/api/business-units/:id',
-    requireRole('Admin'),
+    can('business_units.manage'), // Phase C batch 12 -- was requireRole('Admin'); exact match to the seed (Admin/Super Admin only)
     asyncHandler(async (req, res) => {
         const usage = await pool.query(
             `SELECT COUNT(*) AS cnt FROM departments
@@ -2552,6 +2577,10 @@ app.delete(
 // (only risks from unmanaged departments bubble up to the CRO).
 app.get(
     '/api/departments/without-manager',
+    // Left on requireRole() -- this is a CRO-workflow support endpoint (risk
+    // escalation routing), not Departments CRUD, so departments.manage
+    // isn't the right fit and no dedicated capability exists for it either
+    // (checked during Phase C batch 12's Users & Company Admin sweep).
     requireRole('CRO', 'Consultant CRO', 'Admin'),
     asyncHandler(async (req, res) => {
         // Collect all department names/codes that have at least one active Manager.
@@ -4763,17 +4792,20 @@ app.post(
 // ============================================================
 // Users & Access (H2) — /api/users/*
 // ============================================================
-// Admin-only throughout. This is the one part of the permission model
-// that is already fully self-service today — an Admin can add a user,
-// assign any of the roles in UserManagement.jsx's ROLES array, scope
-// them to department(s)/business unit(s), deactivate, or remove them,
-// entirely through the UI. What is NOT self-service is the set of roles
-// itself, or what each role can do — see
-// Documents/Internal/RBAC_Permissions_Engine_Scoping.docx for the scoped
-// design that would make that configurable too.
+// Users & Access. An Admin can add a user, assign any of the roles in
+// UserManagement.jsx's ROLES array, scope them to department(s)/business
+// unit(s), deactivate, or remove them, entirely through the UI. What is
+// NOT self-service is the set of roles itself, or what each role can do
+// (that lives in Roles & Permissions, Phase B).
+// Phase C batch 12 (2026-07-23): cut over to can('users.manage') -- was
+// requireRole('Admin') throughout, unmigrated during Phase C's original
+// ten batches despite users.manage already existing, already seeded
+// (Admin/Super Admin only, exact match), and already gating this module's
+// nav item and frontend page since Phase D. See CLAUDE.md for the full
+// finding.
 app.get(
     '/api/users',
-    requireRole('Admin'),
+    can('users.manage'),
     asyncHandler(async (req, res) => {
         const result = await pool.query(
             `SELECT u.id, u.email, u.full_name, u.is_active, u.must_change_password,
@@ -4788,7 +4820,11 @@ app.get(
 );
 
 // Returns users with the 'Risk Owner' role — used to populate Control Owner dropdowns.
-// Accessible to all operational roles (not just Admin).
+// Accessible to all operational roles (not just Admin). Left on requireRole()
+// -- this is a broad, read-only dropdown-lookup utility already open to
+// effectively every role, not a Users & Access management action, so
+// users.manage isn't the right fit and no dedicated capability exists for
+// it either (checked during Phase C batch 12's Users & Company Admin sweep).
 app.get(
     '/api/users/risk-owners',
     requireRole('Admin', 'Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO', 'Viewer'),
@@ -4810,7 +4846,7 @@ app.get(
 // with a temporary password that must be changed on first login.
 app.post(
     '/api/users',
-    requireRole('Admin'),
+    can('users.manage'), // Phase C batch 12 -- was requireRole('Admin'); exact match to the seed (Admin/Super Admin only)
     asyncHandler(async (req, res) => {
         const { email, full_name, role, functional_role, department, departments, business_unit_ids, temporary_password } = req.body;
         if (!email) return res.status(400).json({ error: 'Email is required' });
@@ -4973,7 +5009,7 @@ app.post(
 
 app.patch(
     '/api/users/:userId',
-    requireRole('Admin'),
+    can('users.manage'), // Phase C batch 12 -- was requireRole('Admin'); exact match to the seed (Admin/Super Admin only)
     asyncHandler(async (req, res) => {
         const targetId = parseInt(req.params.userId, 10);
         const { role, functional_role, department, departments, business_unit_ids } = req.body;
@@ -5055,7 +5091,7 @@ app.patch(
 // global user record, preserving audit trail integrity per G10).
 app.delete(
     '/api/users/:userId',
-    requireRole('Admin'),
+    can('users.manage'), // Phase C batch 12 -- was requireRole('Admin'); exact match to the seed (Admin/Super Admin only)
     asyncHandler(async (req, res) => {
         const targetId = parseInt(req.params.userId, 10);
 
@@ -5098,7 +5134,7 @@ app.delete(
 // everywhere while preserving its history for the audit trail.
 app.post(
     '/api/users/:userId/active',
-    requireRole('Admin'),
+    can('users.manage'), // Phase C batch 12 -- was requireRole('Admin'); exact match to the seed (Admin/Super Admin only)
     asyncHandler(async (req, res) => {
         const targetId = parseInt(req.params.userId, 10);
         const { is_active } = req.body;
@@ -6523,6 +6559,10 @@ const SECURITY_EVENT_ACTIONS = [
 
 app.get(
     '/api/admin/security-log',
+    // Left on requireRole('Admin') -- no capability in the Section 7
+    // taxonomy represents this route (checked during Phase C batch 12's
+    // Users & Company Admin sweep). Same "no fit yet" precedent as
+    // critical-risks and the Access Matrix/Glossary nav exceptions.
     requireRole('Admin'),
     asyncHandler(async (req, res) => {
         const placeholders = SECURITY_EVENT_ACTIONS.map((_, i) => `$${i + 2}`).join(', ');
@@ -7201,7 +7241,7 @@ function daysBetween(a, b) {
 // see the whole company.
 app.get(
     '/api/dashboard/management-summary',
-    requireRole('Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO', 'Viewer'),
+    can('dashboard.management_summary.view'), // Phase C batch 12 (found during the Users & Company Admin sweep) -- was requireRole('Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO', 'Viewer'); exact match once Admin/Super Admin's requireRole() bypass is accounted for -- this route was simply missed during Phase C's original batches
     asyncHandler(async (req, res) => {
         const riskScope = managerScopeClause(req, 'department', 2);
         const obligationScope = managerScopeClause(req, 'applicable_to', 2);
@@ -7483,8 +7523,15 @@ app.get(
 // Viewers' only task type is policy attestations; Admin/Manager get the
 // full set (control tests due, issues assigned to them, policies they
 // own/approve due for review, and KRIs they're responsible for).
+// Phase C batch 12 (found during the Users & Company Admin sweep) -- this
+// route previously had no gate at all. tasks.my_tasks.view is seeded 'full'
+// for Admin/Super Admin and 'own' for the other 6 roles -- never 'none' for
+// anyone -- so adding this gate is a pure formalization, zero behavior
+// change, matching the same treatment already given to risk.view/
+// policy.view/audit_log.view earlier in this session.
 app.get(
     '/api/dashboard/my-tasks',
+    can('tasks.my_tasks.view'),
     asyncHandler(async (req, res) => {
         const email = req.user.email.toLowerCase();
         const today = new Date();
@@ -8909,6 +8956,9 @@ function resolveNotifyTargets(target, itemDepartment, itemOwner, usersByEmail, m
 
 app.get(
     '/api/notifications',
+    // Left on requireRole() -- no capability in the Section 7 taxonomy
+    // represents this route (checked during Phase C batch 12's Users &
+    // Company Admin sweep).
     requireRole('Admin', 'Risk Manager', 'Risk Champion', 'CRO'),
     asyncHandler(async (req, res) => {
         const rulesRes = await pool.query('SELECT * FROM escalation_rules WHERE company_id = $1 AND is_active = true', [req.company.id]);
@@ -9582,7 +9632,7 @@ app.delete('/api/glossary/:id', can('glossary.manage'), asyncHandler(async (req,
 // ─── Compliance Calendar (H3) ─────────────────────────────────────────────────
 // Aggregates due dates from controls, KRIs, policies, issues, and obligations.
 
-app.get('/api/calendar', requireRole('Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO', 'Viewer'), asyncHandler(async (req, res) => {
+app.get('/api/calendar', can('calendar.view'), asyncHandler(async (req, res) => { // Phase C batch 12 (found during the Users & Company Admin sweep, not that module itself) -- was requireRole('Risk Manager', 'Risk Champion', 'Risk Owner', 'CRO', 'Consultant CRO', 'Viewer'); exact match once Admin/Super Admin's requireRole() bypass is accounted for -- this route was simply missed during Phase C's original Compliance batch (obligations were migrated, this route wasn't)
     const cid = req.company.id;
     const events = [];
 
@@ -9800,7 +9850,7 @@ app.delete('/api/admin/evidence/bulk', can('evidence.bulk_manage'), asyncHandler
 //   - the active company itself
 //   - all its direct subsidiaries
 // Super-admins see every company.
-app.get('/api/companies', requirePasswordCurrent, requireCompany, requireRole('Admin'),
+app.get('/api/companies', requirePasswordCurrent, requireCompany, can('company.manage'), // Phase C batch 12 -- was requireRole('Admin'); exact match to the seed (Admin/Super Admin only)
     asyncHandler(async (req, res) => {
         const cid = req.company.id;
         if (req.user.is_super_admin) {
@@ -9825,7 +9875,7 @@ app.get('/api/companies', requirePasswordCurrent, requireCompany, requireRole('A
 
 // Create a new company. Only an Admin of the current company can create subsidiaries.
 // If parent_company_id is provided it must be the current company (no arbitrary parenting).
-app.post('/api/companies', requirePasswordCurrent, requireCompany, requireRole('Admin'),
+app.post('/api/companies', requirePasswordCurrent, requireCompany, can('company.manage'), // Phase C batch 12 -- was requireRole('Admin'); exact match to the seed (Admin/Super Admin only)
     asyncHandler(async (req, res) => {
         const { name, code, parent_company_id, max_group_access_scope,
                 industry, company_type, country, regulatory_body, fiscal_year_end, description, address } = req.body;
@@ -9908,7 +9958,7 @@ app.get('/api/companies/current/profile', requirePasswordCurrent, requireCompany
     })
 );
 
-app.put('/api/companies/current/profile', requirePasswordCurrent, requireCompany, requireRole('Admin'),
+app.put('/api/companies/current/profile', requirePasswordCurrent, requireCompany, can('company.manage'), // Phase C batch 12 -- was requireRole('Admin'); exact match to the seed (Admin/Super Admin only)
     asyncHandler(async (req, res) => {
         const { name, industry, company_type, country, regulatory_body, fiscal_year_end, description, address, has_business_units } = req.body;
         if (name !== undefined && !name?.trim()) return res.status(400).json({ error: 'Company name cannot be blank.' });
@@ -9935,7 +9985,7 @@ app.put('/api/companies/current/profile', requirePasswordCurrent, requireCompany
 
 // Update a company's name, max_group_access_scope, or is_active.
 // Must be the current company or one of its direct subsidiaries.
-app.put('/api/companies/:id', requirePasswordCurrent, requireCompany, requireRole('Admin'),
+app.put('/api/companies/:id', requirePasswordCurrent, requireCompany, can('company.manage'), // Phase C batch 12 -- was requireRole('Admin'); exact match to the seed (Admin/Super Admin only)
     asyncHandler(async (req, res) => {
         const targetId = parseInt(req.params.id, 10);
         const cid = req.company.id;
@@ -9983,7 +10033,7 @@ app.put('/api/companies/:id', requirePasswordCurrent, requireCompany, requireRol
 // Delete a company (current company or one of its subsidiaries).
 // Blocked if the target company still has active subsidiaries of its own.
 // All associated data (risks, controls, users etc.) is removed via ON DELETE CASCADE.
-app.delete('/api/companies/:id', requirePasswordCurrent, requireCompany, requireRole('Admin'),
+app.delete('/api/companies/:id', requirePasswordCurrent, requireCompany, can('company.manage'), // Phase C batch 12 -- was requireRole('Admin'); exact match to the seed (Admin/Super Admin only)
     asyncHandler(async (req, res) => {
         const targetId = parseInt(req.params.id, 10);
         const cid = req.company.id;
@@ -10030,7 +10080,7 @@ app.delete('/api/companies/:id', requirePasswordCurrent, requireCompany, require
 );
 
 // Update group_access_scope for a user on the current (parent) company.
-app.put('/api/users/:id/group-access', requirePasswordCurrent, requireCompany, requireRole('Admin'),
+app.put('/api/users/:id/group-access', requirePasswordCurrent, requireCompany, can('users.manage'), // Phase C batch 12 -- was requireRole('Admin'); exact match to the seed (Admin/Super Admin only)
     asyncHandler(async (req, res) => {
         const targetUserId = parseInt(req.params.id, 10);
         const { group_access_scope } = req.body;
