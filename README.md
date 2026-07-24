@@ -1,4 +1,4 @@
-# ERM Workstation (Qatar Post) — v2.42.29 (Certitude Advisory Services)
+# ERM Workstation (Qatar Post) — v2.42.30 (Certitude Advisory Services)
 
 A multi-tenant, role-based, audit-logged Enterprise Risk Management platform
 covering the Risk Register, Control Library, KRIs, Policy Repository,
@@ -19,24 +19,29 @@ this first, then `docs/ARCHITECTURE.md` and `docs/API_REFERENCE.md`.
 > `Documents/Qatar_Post_Documentation_Handover_Tracker.xlsx` (in the parent
 > project folder) for the living checklist this rewrite was tracked against.
 
-## Roles today — and a pending change
+## Roles today — and one pending change
 
 The app currently has **eight roles**: Super Admin, Admin, Risk Champion,
 Risk Owner, Risk Manager, CRO, Consultant CRO, and Viewer (see
 `docs/ARCHITECTURE.md` section 2 for what each can do).
 
-**Planned change, not yet made:** Qatar Post and Certitude have agreed that
-**Super Admin and Consultant CRO will be deleted and removed from the app
-before handover.** Neither role is needed in Qatar Post's own operating
-model — Super Admin exists for Certitude's own consulting staff, and
-Consultant CRO supports the multi-client consultant benchmarking layer,
-neither of which applies once Qatar Post is operating the instance
-independently. This has **not been implemented yet** — the code, this
-documentation, and the six user manuals all still describe the current
-8-role reality. Once the roles are actually removed, this file, the
-manuals for those two roles (if any exist), and every place both roles are
-named throughout `docs/` will need a follow-up pass. Tracked in the
-parent project's `CLAUDE.md` and in the documentation tracker spreadsheet.
+**Consultant CRO is permanent, not a removal candidate.** It's kept in
+deliberately so that, post-handover, the Qatar Post CRO can still draw on a
+Certitude consultant's assistance if needed. The Qatar Post Admin controls
+whether/when a real person is actually assigned this role — it isn't
+automatically active for anyone. No code, or documentation, changes are
+planned around Consultant CRO.
+
+**Super Admin is temporary — retained for training, removed at/after Phase
+3 on-prem deployment.** Kept in the app for now for training purposes only.
+It will be deleted either just before the app is deployed onto Qatar Post's
+own server, or immediately after — timing is Qatar Post's call, confirmed
+when Phase 3 (on-prem transfer) actually happens. **This has not been
+implemented yet** — the code and this documentation still describe the
+current 8-role reality. When Super Admin is actually removed, this file and
+every place the role is named throughout `docs/` will need a follow-up
+pass. Tracked in the parent project's `CLAUDE.md` and in the documentation
+tracker spreadsheet.
 
 ## What the platform does
 

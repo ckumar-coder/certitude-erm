@@ -35,7 +35,8 @@ after a period of inactivity, with an on-screen warning first.
 | **Risk Manager** | Full working access to risks, controls, KRIs, issues, and incidents **for your own department**; approve risks your Risk Champions submit. |
 | **CRO** | Enterprise-wide final approval authority on risk acceptance; manages Risk Appetite statements and Scoring Methodology. |
 | **Admin** | Configuration and administration across all departments — users, categories, branding, escalation rules — plus working access to most modules. |
-| **Super Admin** / **Consultant CRO** | Certitude-only roles supporting delivery and multi-client consulting. *Planned for removal before Qatar Post handover.* |
+| **Super Admin** | Certitude-only role for delivery/training. *Retained temporarily; removed at/after Phase 3 on-prem deployment, timing at Qatar Post's instruction.* |
+| **Consultant CRO** | Mirrors CRO's access. *Retained permanently — lets the CRO draw on Certitude consulting assistance post-handover if needed; the Qatar Post Admin controls whether/when it's assigned.* |
 
 Don't worry about memorizing this — the menu on the left only shows what
 you have access to.

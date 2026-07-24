@@ -49,16 +49,19 @@ Today the app has **eight roles**, defined in `UserManagement.jsx`'s
 | Risk Champion | Submits risks; can only edit their own submissions (not department-wide) until a Risk Manager or above takes ownership. |
 | Risk Owner | First-line approver step on the risk workflow; department-scoped. |
 | CRO | Enterprise-wide approval authority; final risk acceptance/decline. |
-| Consultant CRO | Everywhere the backend checks for `CRO`, an auto-expand rule in `requireRole()` also admits `Consultant CRO` — it inherits CRO's access. Exists to support Certitude's multi-client consultant benchmarking layer. |
+| Consultant CRO | Everywhere the backend checks for `CRO`, an auto-expand rule in `requireRole()` also admits `Consultant CRO` — it inherits CRO's access. Retained permanently (not a removal candidate) so the Qatar Post CRO can draw on a Certitude consultant's assistance post-handover if needed; the Qatar Post Admin controls whether/when a real person is assigned this role. |
 | Viewer | Read-only across most modules; excluded from a few (global search, notifications — see `docs/SCOPE_NOTES.md` for known inconsistencies). |
 
-**Planned change, not yet implemented:** Super Admin and Consultant CRO are
-slated for deletion prior to Qatar Post handover (neither role fits Qatar
-Post's own operating model). When that happens, `requireRole()`'s
-Admin/Super-Admin bypass logic, the CRO/Consultant-CRO auto-expand rule,
-and every role list throughout `server.js`, `App.jsx`, and `Layout.jsx`
-that names either role will need to be revisited. Not done as of this
-writing — tracked in the parent project's `CLAUDE.md`.
+**Planned change, not yet implemented — Super Admin only:** Super Admin is
+retained for now for training purposes, and will be deleted either just
+before the app is deployed onto Qatar Post's own server, or immediately
+after — timing is Qatar Post's call, confirmed when Phase 3 (on-prem
+transfer) actually happens. When that happens, `requireRole()`'s
+Admin/Super-Admin bypass logic and every role list throughout `server.js`,
+`App.jsx`, and `Layout.jsx` that names Super Admin specifically will need to
+be revisited. Consultant CRO is unaffected — it is not planned for removal,
+so the CRO/Consultant-CRO auto-expand rule stays as-is indefinitely. Not
+done as of this writing — tracked in the parent project's `CLAUDE.md`.
 
 **Department scoping**: `Risk Champion`, `Risk Owner`, and `Risk Manager`
 are the `DEPT_SCOPED_ROLES`. Scoped users see/edit only records in their

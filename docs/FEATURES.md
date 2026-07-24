@@ -26,8 +26,9 @@ login and infrastructure.
 and do today:
 
 - **Super Admin** — Certitude's own consulting staff; full access across
-  every company on the instance. *(Planned for removal before Qatar Post
-  handover — see `docs/SCOPE_NOTES.md`.)*
+  every company on the instance. *(Retained temporarily for training;
+  removed at/after Phase 3 on-prem deployment, timing at Qatar Post's
+  instruction — see `docs/SCOPE_NOTES.md`.)*
 - **Admin** — full access across the company: configures users,
   categories, branding, escalation rules, and (with a couple of narrow
   exceptions) every module.
@@ -39,9 +40,10 @@ and do today:
 - **Risk Owner** — first-line approver on the risk workflow, department-
   scoped.
 - **CRO** — enterprise-wide final approval authority on risk acceptance.
-- **Consultant CRO** — mirrors CRO's access; supports Certitude's
-  multi-client consultant benchmarking layer. *(Planned for removal
-  before Qatar Post handover.)*
+- **Consultant CRO** — mirrors CRO's access. *(Retained permanently, not a
+  removal candidate — lets the Qatar Post CRO draw on a Certitude
+  consultant's assistance post-handover if needed; the Qatar Post Admin
+  controls whether/when it's assigned to anyone.)*
 - **Viewer** — read-only access to published policies, dashboards, and
   most registers.
 

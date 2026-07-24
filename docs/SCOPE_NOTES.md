@@ -436,18 +436,27 @@ later, the AI Integration hook already used for Horizon Scanning drafts
 is the natural extension point for a machine-translation aid --
 not built; scoped as a future option only.
 
-**Role model today, and a pending change.** The app has eight roles:
+**Role model today, and one pending change.** The app has eight roles:
 Super Admin, Admin, Risk Champion, Risk Owner, Risk Manager, CRO,
-Consultant CRO, Viewer -- see `docs/ARCHITECTURE.md` section 2. **Super
-Admin and Consultant CRO are planned for deletion from the app prior to
-Qatar Post handover** (agreed 2026-07-21) -- neither fits Qatar Post's own
-operating model once Certitude's consulting/delivery involvement ends.
-This has **not been implemented yet**. When it is, every place these two
-roles are named in `server.js` (`requireRole()` lists, the Admin/Super-
-Admin bypass, the CRO/Consultant-CRO auto-expand rule), `App.jsx`,
-`Layout.jsx`, and this documentation set will need a follow-up pass.
-Tracked in the parent project's `CLAUDE.md` and the documentation tracker
-spreadsheet.
+Consultant CRO, Viewer -- see `docs/ARCHITECTURE.md` section 2.
+
+**Consultant CRO is permanent, not a removal candidate** (clarified
+2026-07-21, superseding an earlier note that said otherwise). It is kept
+in deliberately so the Qatar Post CRO can draw on a Certitude consultant's
+assistance post-handover if needed; the Qatar Post Admin controls
+whether/when a real person is actually assigned the role. No code or
+documentation changes are planned around it.
+
+**Super Admin is temporary -- retained for training, removed at/after
+Phase 3 on-prem deployment** (clarified 2026-07-21). It will be deleted
+either just before the app is deployed onto Qatar Post's own server, or
+immediately after -- timing is Qatar Post's call, confirmed when Phase 3
+actually happens. **This has not been implemented yet**. When it is, every
+place Super Admin is named in `server.js` (`requireRole()`'s Admin/Super-
+Admin bypass, the `functional_role = 'Super Admin'` special-casing),
+`App.jsx`, `Layout.jsx`, and this documentation set will need a follow-up
+pass. Tracked in the parent project's `CLAUDE.md` and the documentation
+tracker spreadsheet.
 
 **Known inconsistencies found during a full RBAC audit (2026-07-21).**
 A code-verified audit of every role-based check in the app (backend routes,
