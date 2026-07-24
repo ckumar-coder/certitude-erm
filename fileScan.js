@@ -9,6 +9,14 @@
 // (e.g., a ClamAV daemon REST wrapper, VirusTotal private API, or Google DLP).
 // scanFile() will call it automatically. No caller changes needed.
 //
+// Fail-closed once configured (fixed 2026-07-21): if FILE_SCAN_API_URL is
+// set and the scanner is unreachable, errors, or times out, uploads are
+// REJECTED rather than silently allowed through. If FILE_SCAN_API_URL is
+// not set at all, behaviour is exactly Phase 1 (structural validation only)
+// — this preserves current behaviour everywhere, since no deploy script
+// sets this variable yet. See callExternalScanner() below for the 3-way
+// configured/ok/reason result this depends on.
+//
 // Usage:
 //   const { scanFile } = require('./fileScan');
 //   const result = await scanFile(filename, mime_type, file_data_base64);
@@ -132,17 +140,27 @@ function matchesMagic(buf, mimeType) {
 // Expected JSON request: { filename, data }  (data = base64 file bytes)
 // Expected JSON response: { safe: true } | { safe: false, reason: "..." }
 //
-// If the scanner is unreachable or returns an unexpected response, the upload
-// is ALLOWED (fail-open) so a scanner outage does not block all evidence
-// uploads.  Change to fail-closed if your policy requires it.
+// Three distinct outcomes are returned (not just null/result) so scanFile()
+// can tell "no scanner configured" (Phase 1 — structural validation only,
+// unchanged behaviour) apart from "a scanner was configured but didn't
+// respond" (fail-closed — see scanFile() below). Collapsing those two cases,
+// as the previous version of this function did, is what caused the fail-open
+// bug: an outage of a scanner that was explicitly required silently degraded
+// to no scanning at all, with no indication anywhere that it had happened.
+//
+//   { configured: false }                          — FILE_SCAN_API_URL not set
+//   { configured: true, ok: false, reason }         — set, but scan could not be completed
+//   { configured: true, ok: true, result }           — set, and the scanner responded
 async function callExternalScanner(filename, base64Data) {
     const url = process.env.FILE_SCAN_API_URL;
-    if (!url) return null;   // not configured — skip
+    if (!url) return { configured: false };
 
     try {
         // Use dynamic import so this file loads even without node-fetch installed.
         const { default: fetch } = await import('node-fetch').catch(() => ({ default: null }));
-        if (!fetch) return null;
+        if (!fetch) {
+            return { configured: true, ok: false, reason: 'AV scanner client library (node-fetch) is not available.' };
+        }
 
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 10_000);
@@ -153,14 +171,17 @@ async function callExternalScanner(filename, base64Data) {
                 body: JSON.stringify({ filename, data: base64Data }),
                 signal: controller.signal,
             });
-            if (!resp.ok) return null;
-            return await resp.json();
+            if (!resp.ok) {
+                return { configured: true, ok: false, reason: `Scanner responded with HTTP ${resp.status}.` };
+            }
+            const result = await resp.json();
+            return { configured: true, ok: true, result };
         } finally {
             clearTimeout(timeout);
         }
-    } catch {
-        // Scanner unreachable — fail-open
-        return null;
+    } catch (err) {
+        // Scanner unreachable, timed out, or returned invalid JSON.
+        return { configured: true, ok: false, reason: `Scanner unreachable: ${err.message || 'unknown error'}.` };
     }
 }
 
@@ -199,9 +220,27 @@ async function scanFile(filename, mimeType, base64Data) {
     }
 
     // 4. Optional external AV scan.
+    //
+    // Fail-CLOSED, not fail-open: if FILE_SCAN_API_URL is configured, an
+    // administrator has declared that real malware scanning is required for
+    // this deployment. If the scanner can't be reached or errors, the upload
+    // is rejected rather than silently let through — the previous behaviour
+    // here meant a scanner outage quietly turned "AV scanning enabled" into
+    // "no AV scanning happening", with nothing in the response indicating it.
+    //
+    // If FILE_SCAN_API_URL is NOT configured, behaviour is unchanged from
+    // before (Phase 1 — structural validation above is the only check).
     const extResult = await callExternalScanner(filename, base64Data);
-    if (extResult && extResult.safe === false) {
-        return { safe: false, reason: extResult.reason || 'File did not pass the malware scan.' };
+
+    if (extResult.configured && !extResult.ok) {
+        return {
+            safe:   false,
+            reason: `Malware scanning is currently unavailable (${extResult.reason}). Please try again shortly, or contact your administrator if this persists.`,
+        };
+    }
+
+    if (extResult.configured && extResult.ok && extResult.result?.safe === false) {
+        return { safe: false, reason: extResult.result.reason || 'File did not pass the malware scan.' };
     }
 
     return { safe: true };
